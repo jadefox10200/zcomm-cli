@@ -1,0 +1,17 @@
+# Go build files
+/bin/
+/pkg/
+/*.exe
+/*.out
+*.test
+
+# IDEs
+.vscode/
+.idea/
+
+# Dependency dirs
+vendor/
+
+# OS junk
+.DS_Store
+Thumbs.db
