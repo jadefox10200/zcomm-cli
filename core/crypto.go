@@ -3,6 +3,7 @@ package core
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -16,6 +17,18 @@ type ECDHKeyPair struct {
 	PublicKey  [32]byte
 	PrivateKey [32]byte
 }
+
+type Message struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Type      string `json:"type"`      // e.g., "text"
+	Body      string `json:"body"`      // encrypted (base64)
+	Signature string `json:"signature"` // base64-encoded signature
+}
+
+// -----------------
+// ECDH + AES-GCM
+// -----------------
 
 func GenerateECDHKeyPair() (*ECDHKeyPair, error) {
 	var priv [32]byte
@@ -37,7 +50,7 @@ func DeriveSharedSecret(privKey, pubKey [32]byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	hash := sha256.Sum256(secret) // derive AES key
+	hash := sha256.Sum256(secret) // derive 32-byte AES key
 	return hash[:], nil
 }
 
@@ -77,4 +90,51 @@ func DecryptAESGCM(key []byte, encrypted string) ([]byte, error) {
 	}
 	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
 	return aesGCM.Open(nil, nonce, ciphertext, nil)
+}
+
+// -----------------
+// Signing
+// -----------------
+
+func SignMessage(messageBody []byte, privateKey ed25519.PrivateKey) (string, error) {
+	sig := ed25519.Sign(privateKey, messageBody)
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25519.PublicKey) bool {
+	sig, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(pubKey, messageBody, sig)
+}
+
+// -----------------
+// Message Handling
+// -----------------
+
+func NewEncryptedMessage(from, to, msgType, plaintext string, edPriv ed25519.PrivateKey, sharedKey []byte) (*Message, error) {
+	encrypted, err := EncryptAESGCM(sharedKey, []byte(plaintext))
+	if err != nil {
+		return nil, err
+	}
+	signature, err := SignMessage([]byte(encrypted), edPriv)
+	if err != nil {
+		return nil, err
+	}
+	return &Message{
+		From:      from,
+		To:        to,
+		Type:      msgType,
+		Body:      encrypted,
+		Signature: signature,
+	}, nil
+}
+
+func DecryptMessage(msg *Message, sharedKey []byte) (string, error) {
+	decrypted, err := DecryptAESGCM(sharedKey, msg.Body)
+	if err != nil {
+		return "", err
+	}
+	return string(decrypted), nil
 }
