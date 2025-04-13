@@ -4,6 +4,8 @@
 /*.exe
 /*.out
 *.test
+cmd/client/client
+cmd/server/server
 
 # IDEs
 .vscode/
