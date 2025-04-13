@@ -96,9 +96,9 @@ func DecryptAESGCM(key []byte, encrypted string) ([]byte, error) {
 // Signing
 // -----------------
 
-func SignMessage(messageBody []byte, privateKey ed25519.PrivateKey) (string, error) {
+func SignMessage(messageBody []byte, privateKey ed25519.PrivateKey) string {
 	sig := ed25519.Sign(privateKey, messageBody)
-	return base64.StdEncoding.EncodeToString(sig), nil
+	return base64.StdEncoding.EncodeToString(sig)
 }
 
 func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25519.PublicKey) bool {
@@ -107,28 +107,6 @@ func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25
 		return false
 	}
 	return ed25519.Verify(pubKey, messageBody, sig)
-}
-
-// -----------------
-// Message Handling
-// -----------------
-
-func NewEncryptedMessage(from, to, msgType, plaintext string, edPriv ed25519.PrivateKey, sharedKey []byte) (*Message, error) {
-	encrypted, err := EncryptAESGCM(sharedKey, []byte(plaintext))
-	if err != nil {
-		return nil, err
-	}
-	signature, err := SignMessage([]byte(encrypted), edPriv)
-	if err != nil {
-		return nil, err
-	}
-	return &Message{
-		From:      from,
-		To:        to,
-		Type:      msgType,
-		Body:      encrypted,
-		Signature: signature,
-	}, nil
 }
 
 func DecryptMessage(msg *Message, sharedKey []byte) (string, error) {

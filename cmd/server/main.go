@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"zcomm/core"
+	"github.com/jadefox10200/zcomm/core"
 )
 
 var inbox = make(map[string][]core.ZMessage)
