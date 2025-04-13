@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -44,7 +45,6 @@ func publishKeys(ks *KeyStore) error {
 		return err
 	}
 
-	fmt.Println("About to publish")
 	resp, err := http.Post("http://localhost:8080/publish", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return err
@@ -55,35 +55,65 @@ func publishKeys(ks *KeyStore) error {
 
 // Main entry point for sending a message
 func main() {
-	fmt.Println("Started main")
-	from := "alice" // Use your username
-	to := "bob"     // Recipient username
-	body := "Hello Bob!"
+	// Parse command-line arguments
+	fromPtr := flag.String("from", "", "The sender's username (e.g., alice, bob, etc.)")
+	toPtr := flag.String("to", "", "The recipient's username (e.g., bob, alice, etc.)")
+	bodyPtr := flag.String("body", "Hello!", "The message to send")
+	flag.Parse()
 
-	fmt.Println("load keypair")
-	// Load or create Alice's keypair
+	// Ensure sender and recipient are provided
+	if *fromPtr == "" || *toPtr == "" {
+		fmt.Println("Usage: --from <sender> --to <recipient> --body <message>")
+		os.Exit(1)
+	}
+
+	from := *fromPtr
+	to := *toPtr
+	body := *bodyPtr
+
+	// Load or create the sender's keypair
 	ks, edPriv, ecdhPriv, err := LoadOrCreateKeyPair(from)
 	if err != nil {
-		fmt.Println("Failed to load Alice's keys:", err)
+		fmt.Println("Failed to load or create sender's keys:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("publish keypair")
-	// Publish Alice's public keys if not already published
+	// Publish sender's public keys if not already published
 	if err := publishKeys(ks); err != nil {
-		fmt.Println("Failed to publish Alice's public keys:", err)
+		fmt.Println("Failed to publish sender's public keys:", err)
 		os.Exit(1)
 	}
-	fmt.Println("Successfully published Alice's public keys.")
+	fmt.Println("Successfully published sender's public keys.")
 
-	// Fetch Bob's public ECDH key
+	// Fetch recipient's public ECDH key
 	bobPubKey, err := fetchRecipientKeys(to)
 	if err != nil {
-		fmt.Println("Failed to fetch Bob's public key:", err)
-		os.Exit(1)
+		// Recipient's keys not found, so let's create and publish them
+		fmt.Println("Recipient's keys not found, creating and publishing recipient's keys...")
+
+		// Create recipient's keys
+		ksRecipient, _, ecdhPrivRecipient, err := LoadOrCreateKeyPair(to)
+		if err != nil {
+			fmt.Println("Failed to load or create recipient's keys:", err)
+			os.Exit(1)
+		}
+
+		// Publish recipient's keys to the server
+		if err := publishKeys(ksRecipient); err != nil {
+			fmt.Println("Failed to publish recipient's keys:", err)
+			os.Exit(1)
+		}
+		fmt.Println("Successfully created and published recipient's keys.")
+
+		// Now fetch recipient's public key again after creating it
+		bobPubKey, err = fetchRecipientKeys(to)
+		if err != nil {
+			fmt.Println("Failed to fetch recipient's public key after creating it:", err)
+			os.Exit(1)
+		}
 	}
 
-	// Derive shared secret using Alice's private ECDH and Bob's public ECDH
+	// Derive shared secret using sender's private ECDH and recipient's public ECDH
 	sharedKey, err := core.DeriveSharedSecret(ecdhPriv, bobPubKey)
 	if err != nil {
 		fmt.Println("Failed to derive shared secret:", err)
@@ -91,20 +121,19 @@ func main() {
 	}
 
 	// Create encrypted, signed message
-	msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey) 
+	msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey)
 	if err != nil {
 		fmt.Println("Failed to create message:", err)
 		os.Exit(1)
 	}
 
-	//Send message
+	// Send message
 	data, err := json.Marshal(msg)
 	if err != nil {
 		fmt.Println("Failed to serialize message:", err)
 		os.Exit(1)
 	}
 
-	fmt.Println("about to send")
 	resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		fmt.Println("Failed to send message:", err)
@@ -114,4 +143,3 @@ func main() {
 
 	fmt.Println("Message sent:", resp.Status)
 }
-	
