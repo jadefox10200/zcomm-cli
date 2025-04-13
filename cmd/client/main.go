@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -53,23 +54,50 @@ func publishKeys(ks *KeyStore) error {
 	return nil
 }
 
+// Function to check for incoming messages
+func checkForMessages(from string) error {
+	for {
+		resp, err := http.Get("http://localhost:8080/receive?to=" + from)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusNoContent {
+			// No new message, wait a bit and check again
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		var result map[string]string
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return err
+		}
+
+		fmt.Println("New message received:")
+		// Decode the message and print it
+		// Assuming the message has been encrypted and signed properly
+		// In reality, you'd also need to decrypt here
+		fmt.Println(result["body"])
+
+		time.Sleep(2 * time.Second) // Check again every 2 seconds
+	}
+}
+
 // Main entry point for sending a message
 func main() {
-	// Parse command-line arguments
+	// Parse the 'from' flag for the sender's username
 	fromPtr := flag.String("from", "", "The sender's username (e.g., alice, bob, etc.)")
-	toPtr := flag.String("to", "", "The recipient's username (e.g., bob, alice, etc.)")
-	bodyPtr := flag.String("body", "Hello!", "The message to send")
 	flag.Parse()
 
-	// Ensure sender and recipient are provided
-	if *fromPtr == "" || *toPtr == "" {
-		fmt.Println("Usage: --from <sender> --to <recipient> --body <message>")
+	// Ensure sender is provided
+	if *fromPtr == "" {
+		fmt.Println("Usage: --from <sender>")
 		os.Exit(1)
 	}
 
 	from := *fromPtr
-	to := *toPtr
-	body := *bodyPtr
+	fmt.Printf("Client started for %s...\n", from)
 
 	// Load or create the sender's keypair
 	ks, edPriv, ecdhPriv, err := LoadOrCreateKeyPair(from)
@@ -85,61 +113,63 @@ func main() {
 	}
 	fmt.Println("Successfully published sender's public keys.")
 
-	// Fetch recipient's public ECDH key
-	bobPubKey, err := fetchRecipientKeys(to)
-	if err != nil {
-		// Recipient's keys not found, so let's create and publish them
-		fmt.Println("Recipient's keys not found, creating and publishing recipient's keys...")
+	// Start a goroutine to check for incoming messages
+	go func() {
+		if err := checkForMessages(from); err != nil {
+			fmt.Println("Error checking for messages:", err)
+			os.Exit(1)
+		}
+	}()
 
-		// Create recipient's keys
-		ksRecipient, _, ecdhPrivRecipient, err := LoadOrCreateKeyPair(to)
+	// Main loop to allow the client to send messages
+	for {
+		fmt.Print("Enter recipient's username (or 'exit' to quit): ")
+		var to string
+		fmt.Scanln(&to)
+
+		if to == "exit" {
+			break
+		}
+
+		fmt.Print("Enter the message to send: ")
+		var body string
+		fmt.Scanln(&body)
+
+		// Fetch recipient's public ECDH key
+		recipientPubKey, err := fetchRecipientKeys(to)
 		if err != nil {
-			fmt.Println("Failed to load or create recipient's keys:", err)
-			os.Exit(1)
+			fmt.Println("Failed to fetch recipient's public key:", err)
+			continue
 		}
 
-		// Publish recipient's keys to the server
-		if err := publishKeys(ksRecipient); err != nil {
-			fmt.Println("Failed to publish recipient's keys:", err)
-			os.Exit(1)
-		}
-		fmt.Println("Successfully created and published recipient's keys.")
-
-		// Now fetch recipient's public key again after creating it
-		bobPubKey, err = fetchRecipientKeys(to)
+		// Derive shared secret using sender's private ECDH and recipient's public ECDH
+		sharedKey, err := core.DeriveSharedSecret(ecdhPriv, recipientPubKey)
 		if err != nil {
-			fmt.Println("Failed to fetch recipient's public key after creating it:", err)
-			os.Exit(1)
+			fmt.Println("Failed to derive shared secret:", err)
+			continue
 		}
-	}
 
-	// Derive shared secret using sender's private ECDH and recipient's public ECDH
-	sharedKey, err := core.DeriveSharedSecret(ecdhPriv, bobPubKey)
-	if err != nil {
-		fmt.Println("Failed to derive shared secret:", err)
-		os.Exit(1)
-	}
+		// Create encrypted, signed message
+		msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey)
+		if err != nil {
+			fmt.Println("Failed to create message:", err)
+			continue
+		}
 
-	// Create encrypted, signed message
-	msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey)
-	if err != nil {
-		fmt.Println("Failed to create message:", err)
-		os.Exit(1)
-	}
+		// Send message to the server
+		data, err := json.Marshal(msg)
+		if err != nil {
+			fmt.Println("Failed to serialize message:", err)
+			continue
+		}
 
-	// Send message
-	data, err := json.Marshal(msg)
-	if err != nil {
-		fmt.Println("Failed to serialize message:", err)
-		os.Exit(1)
-	}
+		resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
+		if err != nil {
+			fmt.Println("Failed to send message:", err)
+			continue
+		}
+		defer resp.Body.Close()
 
-	resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		fmt.Println("Failed to send message:", err)
-		os.Exit(1)
+		fmt.Println("Message sent successfully!")
 	}
-	defer resp.Body.Close()
-
-	fmt.Println("Message sent:", resp.Status)
 }
