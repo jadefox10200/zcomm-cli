@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"zcomm/core"
+	"github.com/jadefox10200/zcomm/core"
 )
 
 // Function to get the public key of the recipient from the server
@@ -34,7 +34,7 @@ func fetchRecipientKeys(id string) ([32]byte, error) {
 }
 
 // Function to publish keys to the server (if they’re not already published)
-func publishKeys(ks *core.KeyStore) error {
+func publishKeys(ks *KeyStore) error {
 	data, err := json.Marshal(map[string]string{
 		"id":       ks.ID,
 		"ed_pub":   ks.EdPub,
@@ -44,6 +44,7 @@ func publishKeys(ks *core.KeyStore) error {
 		return err
 	}
 
+	fmt.Println("About to publish")
 	resp, err := http.Post("http://localhost:8080/publish", "application/json", bytes.NewBuffer(data))
 	if err != nil {
 		return err
@@ -54,17 +55,20 @@ func publishKeys(ks *core.KeyStore) error {
 
 // Main entry point for sending a message
 func main() {
+	fmt.Println("Started main")
 	from := "alice" // Use your username
 	to := "bob"     // Recipient username
 	body := "Hello Bob!"
 
+	fmt.Println("load keypair")
 	// Load or create Alice's keypair
-	ks, edPriv, ecdhPriv, err := core.LoadOrCreateKeyPair(from)
+	ks, edPriv, ecdhPriv, err := LoadOrCreateKeyPair(from)
 	if err != nil {
 		fmt.Println("Failed to load Alice's keys:", err)
 		os.Exit(1)
 	}
 
+	fmt.Println("publish keypair")
 	// Publish Alice's public keys if not already published
 	if err := publishKeys(ks); err != nil {
 		fmt.Println("Failed to publish Alice's public keys:", err)
@@ -87,4 +91,27 @@ func main() {
 	}
 
 	// Create encrypted, signed message
-	msg, err :=
+	msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey) 
+	if err != nil {
+		fmt.Println("Failed to create message:", err)
+		os.Exit(1)
+	}
+
+	//Send message
+	data, err := json.Marshal(msg)
+	if err != nil {
+		fmt.Println("Failed to serialize message:", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("about to send")
+	resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		fmt.Println("Failed to send message:", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	fmt.Println("Message sent:", resp.Status)
+}
+	
