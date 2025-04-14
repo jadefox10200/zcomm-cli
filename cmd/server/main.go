@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"encoding/base64"
+	"crypto/ed25519"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -23,15 +25,44 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleReceive(w http.ResponseWriter, r *http.Request) {
-	user := r.URL.Query().Get("id")
-	msgs := inbox[user]
+	id := r.URL.Query().Get("id")
+	ts := r.URL.Query().Get("ts")
+	sig := r.URL.Query().Get("sig")
+
+	if id == "" || ts == "" || sig == "" {
+		http.Error(w, "Missing auth params", http.StatusBadRequest)
+		return
+	}
+
+	userKeys, ok := users[id]
+	if !ok {
+		http.Error(w, "User not found", http.StatusNotFound)
+		return
+	}
+
+	pubKeyBytes, err := base64.StdEncoding.DecodeString(userKeys.EdPub)
+	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
+		http.Error(w, "Invalid public key", http.StatusInternalServerError)
+		return
+	}
+
+	//Reconstruct the signed message:
+	message := []byte(id + ts)
+
+	sigBytes := []byte(sig)
+	if !ed25519.Verify(pubKeyBytes, message, sigBytes) {
+		http.Error(w, "Unauthorized: signature verification failed", http.StatusUnauthorized)
+		return
+	}
+
+	msgs := inbox[id]
 	if len(msgs) == 0 {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(msgs)
-	inbox[user] = []core.ZMessage{} // clear inbox after delivery
+	inbox[id] = []core.ZMessage{} // clear inbox after delivery
 }
 
 func main() {
