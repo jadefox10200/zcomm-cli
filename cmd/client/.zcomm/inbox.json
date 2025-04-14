@@ -1,0 +1,24 @@
+[
+  {
+    "from": "alice",
+    "to": "bob",
+    "timestamp": 1744656865,
+    "type": "text",
+    "body": "VGhpcyBpcyBhIHRlc3QgbWVzc2FnZQ==",
+    "signature": "mocksignature",
+    "prev_hash": "",
+    "hash": "mockhash",
+    "nonce": "mocknonce"
+  },
+  {
+    "from": "alice",
+    "to": "bob",
+    "timestamp": 1744657111,
+    "type": "text",
+    "body": "VGhpcyBpcyBhIHRlc3QgbWVzc2FnZQ==",
+    "signature": "mocksignature",
+    "prev_hash": "",
+    "hash": "mockhash",
+    "nonce": "mocknonce"
+  }
+]

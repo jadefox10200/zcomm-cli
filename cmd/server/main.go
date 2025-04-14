@@ -7,11 +7,19 @@ import (
 	"net/http"
 	"encoding/base64"
 	"crypto/ed25519"
+	"os"
+	"sync"
 
 	"github.com/jadefox10200/zcomm/core"
 )
 
 var inbox = make(map[string][]core.ZMessage)
+
+func init() {
+	if err := loadPublicKeyDirectory(); err != nil {
+		log.Fatalf("Failed to load public key directory: %v", err)
+	}
+}
 
 func handleSend(w http.ResponseWriter, r *http.Request) {
 	var msg core.ZMessage
@@ -65,7 +73,71 @@ func handleReceive(w http.ResponseWriter, r *http.Request) {
 	inbox[id] = []core.ZMessage{} // clear inbox after delivery
 }
 
+func handleIdentity(w http.ResponseWriter, r *http.Request) {
+	var keys core.PublicKeys
+	err := json.NewDecoder(r.Body).Decode(&keys)
+	if err != nil || keys.ID == "" {
+		http.Error(w, "Invalid identity", http.StatusBadRequest)
+		return
+	}
+
+	pubKeyMutex.Lock()
+	pubKeyDirectory[keys.ID] = keys
+	pubKeyMutex.Unlock()
+
+	if err := savePublicKeyDirectory(); err != nil {
+		http.Error(w, "Failed to save keys", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Stored identity for: %s", keys.ID)
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintln(w, "Identity registered")
+}
+
+
+var (
+	pubKeyMutex     sync.RWMutex
+	pubKeyFile      = "pubkeys.json"
+)
+
+func loadPublicKeyDirectory() error {
+	pubKeyMutex.Lock()
+	defer pubKeyMutex.Unlock()
+
+	file, err := os.Open(pubKeyFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No file yet is fine
+		}
+		return err
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	return decoder.Decode(&pubKeyDirectory)
+}
+
+func savePublicKeyDirectory() error {
+	pubKeyMutex.RLock()
+	defer pubKeyMutex.RUnlock()
+
+	file, err := os.Create(pubKeyFile)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(pubKeyDirectory)
+}
+
+
 func main() {
+
+	http.HandleFunc("/identity", handleIdentity)
+
 	http.HandleFunc("/send", handleSend)
 	http.HandleFunc("/receive", handleReceive)
 	

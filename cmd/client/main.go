@@ -227,11 +227,11 @@ func main() {
 			fmt.Println("Message sent successfully!")
 
 		case "2":
-			fmt.Println("(View Inbox stub)")
+			ViewBasket("IN", LoadInboxMessages)
 		case "3":
-			fmt.Println("(View Pending Messages stub)")
+			ViewBasket("PENDING", LoadPendingMessages)
 		case "4":
-			fmt.Println("(View Sent Messages stub)")
+			ViewBasket("OUT", LoadSentMessages)
 		case "5":
 			fmt.Println("(Archive stub)")
 		case "6":
@@ -245,3 +245,19 @@ func main() {
 	}
 }
 
+func ViewBasket(label string, loader func() ([]core.ZMessage, error)) {
+	fmt.Printf("=== %s Messages ===\n", strings.Title(label))
+	messages, err := loader()
+	if err != nil {
+		fmt.Printf("Error loading %s messages: %v\n", label, err)
+		return
+	}
+	if len(messages) == 0 {
+		fmt.Printf("No messages in %s.\n", label)
+		return
+	}
+	for i, msg := range messages {
+		fmt.Printf("[%d] From: %s | To: %s | Type: %s | Timestamp: %d\n",
+			i+1, msg.From, msg.To, msg.Type, msg.Timestamp)
+	}
+}

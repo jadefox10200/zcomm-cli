@@ -1,0 +1,9 @@
+{
+  "alice": {
+    "id": "alice",
+    "ed_pub": "alice-ed25519-pubkey",
+    "ecdh_pub": "alice-curve25519-pubkey",
+    "verified": false,
+    "added_at": 1744667731
+  }
+}
