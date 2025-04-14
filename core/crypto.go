@@ -7,8 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"errors"
-	"io"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -36,6 +34,30 @@ type Message struct {
 // ECDH + AES-GCM
 // -----------------
 
+func EncryptMessage(plaintext []byte, key []byte) (ciphertext []byte, nonce []byte, err error) {
+	return EncryptAESGCM(key, plaintext)
+}
+
+func EncryptWithNonce(key []byte, plaintext []byte) (ciphertext []byte, nonce []byte, err error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	aesgcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	nonce = make([]byte, aesgcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
+	}
+
+	ciphertext = aesgcm.Seal(nil, nonce, plaintext, nil)
+	return ciphertext, nonce, nil
+}
+
 func GenerateECDHKeyPair() (*ECDHKeyPair, error) {
 	var priv [32]byte
 	_, err := rand.Read(priv[:])
@@ -60,43 +82,45 @@ func DeriveSharedSecret(privKey, pubKey [32]byte) ([]byte, error) {
 	return hash[:], nil
 }
 
-func EncryptAESGCM(key, plaintext []byte) (string, error) {
+func EncryptAESGCM(key []byte, plaintext []byte) ([]byte, []byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	aesGCM, err := cipher.NewGCM(block)
+
+	aesgcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
-	nonce := make([]byte, aesGCM.NonceSize())
-	if _, err = io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
+
+	nonce := make([]byte, aesgcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, nil, err
 	}
-	ciphertext := aesGCM.Seal(nonce, nonce, plaintext, nil)
-	return base64.StdEncoding.EncodeToString(ciphertext), nil
+
+	ciphertext := aesgcm.Seal(nil, nonce, plaintext, nil)
+	return ciphertext, nonce, nil
 }
 
-func DecryptAESGCM(key []byte, encrypted string) ([]byte, error) {
-	ciphertext, err := base64.StdEncoding.DecodeString(encrypted)
-	if err != nil {
-		return nil, err
-	}
+func DecryptAESGCM(key []byte, nonce []byte, ciphertext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
-	aesGCM, err := cipher.NewGCM(block)
+
+	aesgcm, err := cipher.NewGCM(block)
 	if err != nil {
 		return nil, err
 	}
-	nonceSize := aesGCM.NonceSize()
-	if len(ciphertext) < nonceSize {
-		return nil, errors.New("ciphertext too short")
+
+	plaintext, err := aesgcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
 	}
-	nonce, ciphertext := ciphertext[:nonceSize], ciphertext[nonceSize:]
-	return aesGCM.Open(nil, nonce, ciphertext, nil)
+
+	return plaintext, nil
 }
+
 
 // -----------------
 // Signing
@@ -115,10 +139,24 @@ func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25
 	return ed25519.Verify(pubKey, messageBody, sig)
 }
 
-func DecryptMessage(msg *Message, sharedKey []byte) (string, error) {
-	decrypted, err := DecryptAESGCM(sharedKey, msg.Body)
+func DecryptMessage(msg *ZMessage, sharedKey []byte) (string, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(msg.Body)
 	if err != nil {
 		return "", err
 	}
-	return string(decrypted), nil
+
+	nonce, err := base64.StdEncoding.DecodeString(msg.Nonce)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := DecryptAESGCM(sharedKey, nonce, ciphertext)
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
 }
+
+
+

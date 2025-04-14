@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"bufio"
+	"strings"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"time"
+	"net/url"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -71,7 +74,8 @@ func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte)
 		// func SignMessage(privateKey ed25519.PrivateKey, messageBody []byte) string {
 
 		//Make authenticated request:
-		url := fmt.Sprintf("http://localhost:8080/receive?id=%s&sig=%s", from, ts, sigB64)
+		encodedSig := url.QueryEscape(sigB64)
+		url := fmt.Sprintf("http://localhost:8080/receive?id=%s&ts=%s&sig=%s", from, ts, encodedSig)
 		resp, err := http.Get(url)
 		if err != nil {
 			fmt.Println("Error fetching messages:", err)
@@ -168,6 +172,9 @@ func main() {
 	}()
 
 	// Main loop to allow the client to send messages
+	// Track previous hashes per recipient
+	conversationHashes := make(map[string]string)
+
 	for {
 		fmt.Print("Enter recipient's username (or 'exit' to quit): ")
 		var to string
@@ -178,8 +185,13 @@ func main() {
 		}
 
 		fmt.Print("Enter the message to send: ")
-		var body string
-		fmt.Scanln(&body)
+		reader := bufio.NewReader(os.Stdin)
+		body, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading message:", err)
+			continue
+		}
+		body = strings.TrimSpace(body)
 
 		// Fetch recipient's public ECDH key
 		recipientPubKey, err := fetchRecipientKeys(to)
@@ -195,12 +207,18 @@ func main() {
 			continue
 		}
 
-		// Create encrypted, signed message
-		msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey)
+		// Get previous hash for this conversation
+		prevHash := conversationHashes[to]
+
+		// Create encrypted, signed, chained message
+		msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey, prevHash)
 		if err != nil {
 			fmt.Println("Failed to create message:", err)
 			continue
 		}
+
+		// Update conversation hash
+		conversationHashes[to] = msg.Hash
 
 		// Send message to the server
 		data, err := json.Marshal(msg)
@@ -218,4 +236,5 @@ func main() {
 
 		fmt.Println("Message sent successfully!")
 	}
+
 }

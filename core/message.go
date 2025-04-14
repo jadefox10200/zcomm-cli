@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"fmt"
 )
 
 type ZMessage struct {
@@ -15,6 +17,11 @@ type ZMessage struct {
 	Type      string `json:"type"` // e.g. text, html, file
 	Body      string `json:"body"` // Base64 encoded
 	Signature string `json:"signature"`
+
+	// New fields for chaining
+	PrevHash  string `json:"prev_hash"`  // base64-encoded previous hash
+	Hash      string `json:"hash"`       // base64-encoded hash of this message
+	Nonce string `json:"nonce"`
 }
 
 //EncodeKey 
@@ -38,26 +45,42 @@ func VerifySignature(pubKey ed25519.PublicKey, messageBody []byte, signatureB64 
 	return ed25519.Verify(pubKey, messageBody, sig), nil
 }
 
-func NewEncryptedMessage(from, to, msgType, body string, privKey ed25519.PrivateKey, aesKey []byte) (*ZMessage, error) {
-	ts := time.Now().Unix()
+func NewEncryptedMessage(from, to, msgType, plaintext string, privKey ed25519.PrivateKey, sharedKey []byte, prevHash string) (*ZMessage, error) {
+    // Encrypt message
+    ciphertext, nonce, err := EncryptMessage([]byte(plaintext), sharedKey)
+    if err != nil {
+        return nil, err
+    }
 
-	encryptedBody, err := EncryptAESGCM(aesKey, []byte(body))
-	if err != nil {
-		return nil, err
-	}
+    ts := time.Now().Unix()
 
-	raw := from + to + msgType + encryptedBody + string(ts)
-	sig := SignMessage(privKey, []byte(raw))
+    // Base64 encode
+    bodyB64 := base64.StdEncoding.EncodeToString(ciphertext)
+    nonceB64 := base64.StdEncoding.EncodeToString(nonce)
 
-	return &ZMessage{
-		From:      from,
-		To:        to,
-		Timestamp: ts,
-		Type:      msgType,
-		Body:      encryptedBody,
-		Signature: sig,
-	}, nil
+    // Compose base message
+    msg := &ZMessage{
+        From:      from,
+        To:        to,
+        Type:      msgType,
+        Body:      bodyB64,
+        Nonce:     nonceB64,
+        Timestamp: ts,
+        PrevHash:  prevHash,
+    }
+
+    // Hash the message content
+    hashInput := fmt.Sprintf("%s%s%s%s%s%d%s", from, to, msgType, bodyB64, nonceB64, ts, prevHash)
+    digest := sha256.Sum256([]byte(hashInput))
+    msg.Hash = base64.StdEncoding.EncodeToString(digest[:])
+
+    // Sign the hash
+    sig := ed25519.Sign(privKey, digest[:])
+    msg.Signature = base64.StdEncoding.EncodeToString(sig)
+
+    return msg, nil
 }
+
 
 func (m *ZMessage) Validate(pubKey []byte) bool {
 	raw := m.From + m.To + m.Type + m.Body + string(m.Timestamp)
@@ -76,10 +99,22 @@ func (m *ZMessage) ToJSON() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-func (m *ZMessage) DecryptBody(aesKey []byte) (string, error) {
-	plaintext, err := DecryptAESGCM(aesKey, m.Body)
+func (zm *ZMessage) DecryptBody(sharedKey []byte) (string, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(zm.Body)
 	if err != nil {
 		return "", err
 	}
+
+	nonce, err := base64.StdEncoding.DecodeString(zm.Nonce)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := DecryptAESGCM(sharedKey, nonce, ciphertext)
+	if err != nil {
+		return "", err
+	}
+
 	return string(plaintext), nil
 }
+
