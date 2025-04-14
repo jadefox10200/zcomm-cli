@@ -48,13 +48,12 @@ func SaveKeyPair(id string, keys *KeyStore) error {
 
 // LoadKeyPair attempts to load keys, or generates them if missing
 func LoadOrCreateKeyPair(id string) (*KeyStore, ed25519.PrivateKey, [32]byte, error) {
-	fmt.Println("entered loadorcreatekeypair")
+	
 	path, err := getKeyFilePath(id)
 	if err != nil {
 		return nil, nil, [32]byte{}, err
 	}
 
-	fmt.Println("finished getKeyFilePath")
 	if _, err := os.Stat(path); err == nil {
 		// Load existing keys
 		data, err := os.ReadFile(path)

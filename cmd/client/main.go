@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -60,7 +61,7 @@ func publishKeys(ks *KeyStore) error {
 }
 
 // Function to check for incoming messages
-func checkForMessages(from string) error {
+func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) error {
 	for {
 		resp, err := http.Get("http://localhost:8080/receive?to=" + from)
 		if err != nil {
@@ -74,18 +75,41 @@ func checkForMessages(from string) error {
 			continue
 		}
 		
-		var result map[string]string
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		var msgs []core.ZMessage 
+		if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+			resp.Body.Close()
 			return err
 		}
 
-		fmt.Println("New message received:")
-		// Decode the message and print it
-		// Assuming the message has been encrypted and signed properly
-		// In reality, you'd also need to decrypt here
-		fmt.Println(result["body"])
+		for _, msg := range msgs{
+			fmt.Println("\n New Message!")
 
-		time.Sleep(2 * time.Second) // Check again every 2 seconds
+			// Fetch senders public key
+			senderKeys, err := fetchRecipientKeys(msg.From)
+			if err != nil {
+				fmt.Println("Error fetching sender keys:", err)
+				continue
+			}
+
+			//derive shared secret
+			sharedKey, err := core.DeriveSharedSecret(ecdhPriv, senderKeys)
+			if err != nil {
+				fmt.Println("Error deriving shared key:", err)
+				continue
+			}
+
+			//decrypt:
+			plaintext, err := msg.DecryptBody(sharedKey)
+			if err != nil {
+				fmt.Println("Error decrypting message:", err)
+				continue
+			}
+
+			fmt.Printf("From %s\nMessage: %s\n", msg.From, plaintext)
+		}
+
+		time.Sleep(2 * time.Second)
+
 	}
 }
 
@@ -120,7 +144,7 @@ func main() {
 
 	// Start a goroutine to check for incoming messages
 	go func() {
-		if err := checkForMessages(from); err != nil {
+		if err := checkForMessages(from, edPriv, ecdhPriv); err != nil {
 			fmt.Println("Error checking for messages:", err)
 			os.Exit(1)
 		}

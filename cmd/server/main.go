@@ -29,6 +29,7 @@ func handleReceive(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(msgs)
 	inbox[user] = []core.ZMessage{} // clear inbox after delivery
 }

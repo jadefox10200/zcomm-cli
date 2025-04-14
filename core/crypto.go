@@ -102,7 +102,7 @@ func DecryptAESGCM(key []byte, encrypted string) ([]byte, error) {
 // Signing
 // -----------------
 
-func SignMessage(messageBody []byte, privateKey ed25519.PrivateKey) string {
+func SignMessage(privateKey ed25519.PrivateKey, messageBody []byte) string {
 	sig := ed25519.Sign(privateKey, messageBody)
 	return base64.StdEncoding.EncodeToString(sig)
 }
