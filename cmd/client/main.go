@@ -1,23 +1,22 @@
 package main
 
 import (
-	"bytes"
 	"bufio"
-	"strings"
+	"bytes"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"net/http"
-	"os"
-	"time"
 	"net/url"
+	"os"
+	"strings"
+	"time"
 
 	"github.com/jadefox10200/zcomm/core"
 )
 
-// Function to get the public key of the recipient from the server
 func fetchRecipientKeys(id string) ([32]byte, error) {
 	var pub [32]byte
 	resp, err := http.Get("http://localhost:8080/pubkey?id=" + id)
@@ -39,7 +38,6 @@ func fetchRecipientKeys(id string) ([32]byte, error) {
 	return pub, nil
 }
 
-// Function to publish keys to the server (if they’re not already published)
 func publishKeys(ks *KeyStore) error {
 	data, err := json.Marshal(map[string]string{
 		"id":       ks.ID,
@@ -57,23 +55,18 @@ func publishKeys(ks *KeyStore) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Failed to poublish keys, server returned status: %s", resp.Status)
+		return fmt.Errorf("Failed to publish keys, server returned status: %s", resp.Status)
 	}
 
 	return nil
 }
 
-// Function to check for incoming messages
 func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) error {
 	for {
-		// Generate timestamp and signature
 		ts := fmt.Sprintf("%d", time.Now().Unix())
 		message := []byte(from + ts)
 		sig := ed25519.Sign(edPriv, message)
 		sigB64 := base64.StdEncoding.EncodeToString(sig)
-		// func SignMessage(privateKey ed25519.PrivateKey, messageBody []byte) string {
-
-		//Make authenticated request:
 		encodedSig := url.QueryEscape(sigB64)
 		url := fmt.Sprintf("http://localhost:8080/receive?id=%s&ts=%s&sig=%s", from, ts, encodedSig)
 		resp, err := http.Get(url)
@@ -85,7 +78,6 @@ func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte)
 		defer resp.Body.Close()
 
 		if resp.StatusCode == http.StatusNoContent {
-			// No new message, wait a bit and check again
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -95,31 +87,27 @@ func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte)
 			buf.ReadFrom(resp.Body)
 			return fmt.Errorf("server returned error: %s", buf.String())
 		}
-		
-		var msgs []core.ZMessage 
+
+		var msgs []core.ZMessage
 		if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
 			resp.Body.Close()
 			return err
 		}
 
-		for _, msg := range msgs{
-			fmt.Println("\n New Message!")
-
-			// Fetch senders public key
+		for _, msg := range msgs {
+			fmt.Println("\nNew Message!")
 			senderKeys, err := fetchRecipientKeys(msg.From)
 			if err != nil {
 				fmt.Println("Error fetching sender keys:", err)
 				continue
 			}
 
-			//derive shared secret
 			sharedKey, err := core.DeriveSharedSecret(ecdhPriv, senderKeys)
 			if err != nil {
 				fmt.Println("Error deriving shared key:", err)
 				continue
 			}
 
-			//decrypt:
 			plaintext, err := msg.DecryptBody(sharedKey)
 			if err != nil {
 				fmt.Println("Error decrypting message:", err)
@@ -130,17 +118,24 @@ func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte)
 		}
 
 		time.Sleep(2 * time.Second)
-
 	}
 }
 
-// Main entry point for sending a message
+func printMenu() {
+	fmt.Println("\nMain Menu")
+	fmt.Println("1. Send Message")
+	fmt.Println("2. View Inbox (IN)")
+	fmt.Println("3. View Pending Messages")
+	fmt.Println("4. View Sent Messages (OUT)")
+	fmt.Println("5. Archive a Conversation")
+	fmt.Println("6. Help")
+	fmt.Println("7. Exit")
+}
+
 func main() {
-	// Parse the 'from' flag for the sender's username
 	fromPtr := flag.String("from", "", "The sender's username (e.g., alice, bob, etc.)")
 	flag.Parse()
 
-	// Ensure sender is provided
 	if *fromPtr == "" {
 		fmt.Println("Usage: --from <sender>")
 		os.Exit(1)
@@ -149,21 +144,18 @@ func main() {
 	from := *fromPtr
 	fmt.Printf("Client started for %s...\n", from)
 
-	// Load or create the sender's keypair
 	ks, edPriv, ecdhPriv, err := LoadOrCreateKeyPair(from)
 	if err != nil {
 		fmt.Println("Failed to load or create sender's keys:", err)
 		os.Exit(1)
 	}
 
-	// Publish sender's public keys if not already published
 	if err := publishKeys(ks); err != nil {
 		fmt.Println("Failed to publish sender's public keys:", err)
 		os.Exit(1)
 	}
 	fmt.Println("Successfully published sender's public keys.")
 
-	// Start a goroutine to check for incoming messages
 	go func() {
 		if err := checkForMessages(from, edPriv, ecdhPriv); err != nil {
 			fmt.Println("Error checking for messages:", err)
@@ -171,70 +163,85 @@ func main() {
 		}
 	}()
 
-	// Main loop to allow the client to send messages
-	// Track previous hashes per recipient
+	scanner := bufio.NewScanner(os.Stdin)
 	conversationHashes := make(map[string]string)
 
 	for {
-		fmt.Print("Enter recipient's username (or 'exit' to quit): ")
-		var to string
-		fmt.Scanln(&to)
-
-		if to == "exit" {
-			break
-		}
-
-		fmt.Print("Enter the message to send: ")
-		reader := bufio.NewReader(os.Stdin)
-		body, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Error reading message:", err)
-			continue
-		}
-		body = strings.TrimSpace(body)
-
-		// Fetch recipient's public ECDH key
-		recipientPubKey, err := fetchRecipientKeys(to)
-		if err != nil {
-			fmt.Println("Failed to fetch recipient's public key:", err)
+		printMenu()
+		fmt.Print("Enter choice: ")
+		if !scanner.Scan() {
+			fmt.Println("Failed to read input")
 			continue
 		}
 
-		// Derive shared secret using sender's private ECDH and recipient's public ECDH
-		sharedKey, err := core.DeriveSharedSecret(ecdhPriv, recipientPubKey)
-		if err != nil {
-			fmt.Println("Failed to derive shared secret:", err)
-			continue
+		switch scanner.Text() {
+		case "1":
+			fmt.Print("Enter recipient's username: ")
+			if !scanner.Scan() {
+				fmt.Println("Failed to read recipient")
+				continue
+			}
+			to := scanner.Text()
+
+			fmt.Print("Enter your message: ")
+			reader := bufio.NewReader(os.Stdin)
+			body, err := reader.ReadString('\n')
+			if err != nil {
+				fmt.Println("Error reading message:", err)
+				continue
+			}
+			body = strings.TrimSpace(body)
+
+			recipientPubKey, err := fetchRecipientKeys(to)
+			if err != nil {
+				fmt.Println("Failed to fetch recipient's public key:", err)
+				continue
+			}
+
+			sharedKey, err := core.DeriveSharedSecret(ecdhPriv, recipientPubKey)
+			if err != nil {
+				fmt.Println("Failed to derive shared secret:", err)
+				continue
+			}
+
+			prevHash := conversationHashes[to]
+			msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey, prevHash)
+			if err != nil {
+				fmt.Println("Failed to create message:", err)
+				continue
+			}
+
+			conversationHashes[to] = msg.Hash
+			data, err := json.Marshal(msg)
+			if err != nil {
+				fmt.Println("Failed to serialize message:", err)
+				continue
+			}
+
+			resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
+			if err != nil {
+				fmt.Println("Failed to send message:", err)
+				continue
+			}
+			defer resp.Body.Close()
+			fmt.Println("Message sent successfully!")
+
+		case "2":
+			fmt.Println("(View Inbox stub)")
+		case "3":
+			fmt.Println("(View Pending Messages stub)")
+		case "4":
+			fmt.Println("(View Sent Messages stub)")
+		case "5":
+			fmt.Println("(Archive stub)")
+		case "6":
+			printMenu()
+		case "7":
+			fmt.Println("Exiting Zcomm. Goodbye!")
+			return
+		default:
+			fmt.Println("Invalid choice. Type '6' for help.")
 		}
-
-		// Get previous hash for this conversation
-		prevHash := conversationHashes[to]
-
-		// Create encrypted, signed, chained message
-		msg, err := core.NewEncryptedMessage(from, to, "text", body, edPriv, sharedKey, prevHash)
-		if err != nil {
-			fmt.Println("Failed to create message:", err)
-			continue
-		}
-
-		// Update conversation hash
-		conversationHashes[to] = msg.Hash
-
-		// Send message to the server
-		data, err := json.Marshal(msg)
-		if err != nil {
-			fmt.Println("Failed to serialize message:", err)
-			continue
-		}
-
-		resp, err := http.Post("http://localhost:8080/send", "application/json", bytes.NewBuffer(data))
-		if err != nil {
-			fmt.Println("Failed to send message:", err)
-			continue
-		}
-		defer resp.Body.Close()
-
-		fmt.Println("Message sent successfully!")
 	}
-
 }
+
