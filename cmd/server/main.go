@@ -1,149 +1,31 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
-	"encoding/base64"
-	"crypto/ed25519"
-	"os"
-	"sync"
 
-	"github.com/jadefox10200/zcomm/core"
+	"github.com/jadefox10200/zcomm/server/handlers"
+	"github.com/jadefox10200/zcomm/server/storage"
 )
-
-var inbox = make(map[string][]core.ZMessage)
-
-func init() {
-	if err := loadPublicKeyDirectory(); err != nil {
-		log.Fatalf("Failed to load public key directory: %v", err)
-	}
-}
-
-func handleSend(w http.ResponseWriter, r *http.Request) {
-	var msg core.ZMessage
-	err := json.NewDecoder(r.Body).Decode(&msg)
-	if err != nil {
-		http.Error(w, "invalid message", http.StatusBadRequest)
-		return
-	}
-	inbox[msg.To] = append(inbox[msg.To], msg)
-	fmt.Fprintf(w, "Message delivered")
-}
-
-func handleReceive(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Query().Get("id")
-	ts := r.URL.Query().Get("ts")
-	sig := r.URL.Query().Get("sig")
-
-	userKeys, ok := pubKeyDirectory[id]
-	if !ok {
-		http.Error(w, "User not found", http.StatusNotFound)
-		return
-	}
-
-	pubKeyBytes, err := base64.StdEncoding.DecodeString(userKeys.EdPub)
-	if err != nil || len(pubKeyBytes) != ed25519.PublicKeySize {
-		http.Error(w, "Invalid public key", http.StatusInternalServerError)
-		return
-	}
-
-	sigBytes, err := base64.StdEncoding.DecodeString(sig)
-	if err != nil {
-		http.Error(w, "Invalide signature format", http.StatusBadRequest)
-		return
-	}
-
-	//Reconstruct the signed message:
-	message := []byte(id + ts)
-
-	if !ed25519.Verify(pubKeyBytes, message, sigBytes) {
-		http.Error(w, "Unauthorized: signature verification failed", http.StatusUnauthorized)
-		return
-	}
-
-	msgs := inbox[id]
-	if len(msgs) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(msgs)
-	inbox[id] = []core.ZMessage{} // clear inbox after delivery
-}
-
-func handleIdentity(w http.ResponseWriter, r *http.Request) {
-	var keys core.PublicKeys
-	err := json.NewDecoder(r.Body).Decode(&keys)
-	if err != nil || keys.ID == "" {
-		http.Error(w, "Invalid identity", http.StatusBadRequest)
-		return
-	}
-
-	pubKeyMutex.Lock()
-	pubKeyDirectory[keys.ID] = keys
-	pubKeyMutex.Unlock()
-
-	if err := savePublicKeyDirectory(); err != nil {
-		http.Error(w, "Failed to save keys", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("Stored identity for: %s", keys.ID)
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, "Identity registered")
-}
-
-
-var (
-	pubKeyMutex     sync.RWMutex
-	pubKeyFile      = "pubkeys.json"
-)
-
-func loadPublicKeyDirectory() error {
-	pubKeyMutex.Lock()
-	defer pubKeyMutex.Unlock()
-
-	file, err := os.Open(pubKeyFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No file yet is fine
-		}
-		return err
-	}
-	defer file.Close()
-
-	decoder := json.NewDecoder(file)
-	return decoder.Decode(&pubKeyDirectory)
-}
-
-func savePublicKeyDirectory() error {
-	pubKeyMutex.RLock()
-	defer pubKeyMutex.RUnlock()
-
-	file, err := os.Create(pubKeyFile)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	encoder := json.NewEncoder(file)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(pubKeyDirectory)
-}
-
 
 func main() {
+	// Load persistent stores
+	keyStore, err := storage.NewKeyStore("data/pubkeys.json")
+	if err != nil {
+		log.Fatalf("Failed to load key store: %v", err)
+	}
 
-	http.HandleFunc("/identity", handleIdentity)
+	identityStore, err := storage.NewIdentityStore("data/identities.json")
+	if err != nil {
+		log.Fatalf("Failed to load identity store: %v", err)
+	}
 
-	http.HandleFunc("/send", handleSend)
-	http.HandleFunc("/receive", handleReceive)
-	
-	http.HandleFunc("/publish", handlePublishKeys)
-	http.HandleFunc("/pubkey", handleFetchKeys)
-
+	// Register HTTP routes
+	http.HandleFunc("/identity", handlers.HandleIdentity(identityStore, keyStore))
+	http.HandleFunc("/send", handlers.HandleSend())
+	http.HandleFunc("/receive", handlers.HandleReceive(keyStore))
+	http.HandleFunc("/publish", handlers.HandlePublishKeys(keyStore))
+	http.HandleFunc("/pubkey", handlers.HandleFetchKeys(keyStore))
 
 	log.Println("ZComm Switchboard server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))

@@ -1,18 +1,25 @@
-package main
+package storage
 
 import (
 	"encoding/json"
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
 )
 
 type Identity struct {
-	ID         string `json:"id"`
-	VerifyKey  string `json:"verify_key"`  // Base64
-	ExchangeKey string `json:"exchange_key"` // Base64
+	ID          string `json:"id"`
+	VerifyKey   string `json:"verify_key"`
+	ExchangeKey string `json:"exchange_key"`
+}
+
+func (i Identity) ToPublicKeys() PublicKeys {
+	return PublicKeys{
+		ID:    i.ID,
+		EdPub: i.VerifyKey,
+		DHPub: i.ExchangeKey,
+	}
 }
 
 type IdentityStore struct {
@@ -22,37 +29,18 @@ type IdentityStore struct {
 }
 
 func NewIdentityStore(path string) (*IdentityStore, error) {
-	absPath := filepath.Join("data", path)
 	store := &IdentityStore{
 		Identities: make(map[string]Identity),
-		FilePath:   absPath,
+		FilePath:   path,
 	}
-
-	// Ensure data directory exists
-	err := os.MkdirAll(filepath.Dir(absPath), 0755)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return nil, err
 	}
-
-	// Load from disk if exists
-	data, err := ioutil.ReadFile(absPath)
+	data, err := os.ReadFile(path)
 	if err == nil {
 		json.Unmarshal(data, &store.Identities)
 	}
-
 	return store, nil
-}
-
-func (s *IdentityStore) Save() error {
-	s.RLock()
-	defer s.RUnlock()
-
-	data, err := json.MarshalIndent(s.Identities, "", "  ")
-	if err != nil {
-		return err
-	}
-
-	return ioutil.WriteFile(s.FilePath, data, 0644)
 }
 
 func (s *IdentityStore) Add(identity Identity) error {
@@ -62,7 +50,16 @@ func (s *IdentityStore) Add(identity Identity) error {
 	if _, exists := s.Identities[identity.ID]; exists {
 		return errors.New("identity already exists")
 	}
-
 	s.Identities[identity.ID] = identity
-	return s.Save()
+	return s.save()
+}
+
+func (s *IdentityStore) save() error {
+	s.RLock()
+	defer s.RUnlock()
+	data, err := json.MarshalIndent(s.Identities, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.FilePath, data, 0644)
 }
