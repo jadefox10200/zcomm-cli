@@ -6,7 +6,7 @@ import (
 
 	"github.com/jadefox10200/zcomm/core"
 )
-
+// var users = make(map[string]core.PublicKeys) //maps user ID to ed25519 public key (base64)
 var pubKeyDirectory = make(map[string]core.PublicKeys)
 
 func handlePublishKeys(w http.ResponseWriter, r *http.Request) {
@@ -15,6 +15,7 @@ func handlePublishKeys(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid key data", http.StatusBadRequest)
 		return
 	}
+	// users[keys.ID] = keys
 	pubKeyDirectory[keys.ID] = keys
 	w.WriteHeader(http.StatusOK)
 	// json.NewEncoder(w).Encode(map[string]string{"status": "published"})

@@ -29,12 +29,7 @@ func handleReceive(w http.ResponseWriter, r *http.Request) {
 	ts := r.URL.Query().Get("ts")
 	sig := r.URL.Query().Get("sig")
 
-	if id == "" || ts == "" || sig == "" {
-		http.Error(w, "Missing auth params", http.StatusBadRequest)
-		return
-	}
-
-	userKeys, ok := users[id]
+	userKeys, ok := pubKeyDirectory[id]
 	if !ok {
 		http.Error(w, "User not found", http.StatusNotFound)
 		return
@@ -46,10 +41,15 @@ func handleReceive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sigBytes, err := base64.StdEncoding.DecodeString(sig)
+	if err != nil {
+		http.Error(w, "Invalide signature format", http.StatusBadRequest)
+		return
+	}
+
 	//Reconstruct the signed message:
 	message := []byte(id + ts)
 
-	sigBytes := []byte(sig)
 	if !ed25519.Verify(pubKeyBytes, message, sigBytes) {
 		http.Error(w, "Unauthorized: signature verification failed", http.StatusUnauthorized)
 		return

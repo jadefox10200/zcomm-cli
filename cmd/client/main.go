@@ -63,9 +63,20 @@ func publishKeys(ks *KeyStore) error {
 // Function to check for incoming messages
 func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) error {
 	for {
-		resp, err := http.Get("http://localhost:8080/receive?to=" + from)
+		// Generate timestamp and signature
+		ts := fmt.Sprintf("%d", time.Now().Unix())
+		message := []byte(from + ts)
+		sig := ed25519.Sign(edPriv, message)
+		sigB64 := base64.StdEncoding.EncodeToString(sig)
+		// func SignMessage(privateKey ed25519.PrivateKey, messageBody []byte) string {
+
+		//Make authenticated request:
+		url := fmt.Sprintf("http://localhost:8080/receive?id=%s&sig=%s", from, ts, sigB64)
+		resp, err := http.Get(url)
 		if err != nil {
-			return err
+			fmt.Println("Error fetching messages:", err)
+			time.Sleep(2 * time.Second)
+			continue
 		}
 		defer resp.Body.Close()
 
@@ -73,6 +84,12 @@ func checkForMessages(from string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte)
 			// No new message, wait a bit and check again
 			time.Sleep(2 * time.Second)
 			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			buf := new(bytes.Buffer)
+			buf.ReadFrom(resp.Body)
+			return fmt.Errorf("server returned error: %s", buf.String())
 		}
 		
 		var msgs []core.ZMessage 
