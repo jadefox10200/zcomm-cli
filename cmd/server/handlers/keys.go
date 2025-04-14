@@ -5,7 +5,7 @@ import (
 	"net/http"
 
 	"github.com/jadefox10200/zcomm/core"
-	"github.com/jadefox10200/zcomm/server/storage"
+	"github.com/jadefox10200/zcomm/cmd/server/storage"
 )
 
 func HandlePublishKeys(store *storage.KeyStore) http.HandlerFunc {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/jadefox10200/zcomm/server/storage"
+	"github.com/jadefox10200/zcomm/cmd/server/storage"
 )
 
 func HandleIdentity(identityStore *storage.IdentityStore, keyStore *storage.KeyStore) http.HandlerFunc {

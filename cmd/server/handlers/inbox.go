@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	"github.com/jadefox10200/zcomm/core"
-	"github.com/jadefox10200/zcomm/server/storage"
+	"github.com/jadefox10200/zcomm/cmd/server/storage"
 )
 
 var inbox = make(map[string][]core.ZMessage)

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/jadefox10200/zcomm/core"
 )
 
 type Identity struct {
@@ -14,14 +16,13 @@ type Identity struct {
 	ExchangeKey string `json:"exchange_key"`
 }
 
-func (i Identity) ToPublicKeys() PublicKeys {
-	return PublicKeys{
-		ID:    i.ID,
-		EdPub: i.VerifyKey,
-		DHPub: i.ExchangeKey,
+func (i Identity) ToPublicKeys() core.PublicKeys {
+	return core.PublicKeys{
+		ID:      i.ID,
+		EdPub:   i.VerifyKey,
+		ECDHPub: i.ExchangeKey,
 	}
 }
-
 type IdentityStore struct {
 	sync.RWMutex
 	Identities map[string]Identity

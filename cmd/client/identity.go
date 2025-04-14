@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"encoding/json"
 	"path/filepath"
+
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -17,7 +19,7 @@ type Identity struct {
 }
 
 // GenerateIdentity creates a new Curve25519 keypair and stores it locally
-func GenerateIdentity(filepath string) (*Identity, error) {
+func GenerateIdentity(path string) (*Identity, error) {
 	var priv [32]byte
 	if _, err := rand.Read(priv[:]); err != nil {
 		return nil, fmt.Errorf("failed to generate private key: %w", err)
@@ -38,10 +40,10 @@ func GenerateIdentity(filepath string) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(filepath), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(filepath, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return nil, err
 	}
 

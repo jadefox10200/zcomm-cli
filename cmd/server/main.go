@@ -4,8 +4,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/jadefox10200/zcomm/server/handlers"
-	"github.com/jadefox10200/zcomm/server/storage"
+	"github.com/jadefox10200/zcomm/cmd/server/handlers"
+	"github.com/jadefox10200/zcomm/cmd/server/storage"
 )
 
 func main() {
