@@ -18,6 +18,12 @@ type ECDHKeyPair struct {
 	PrivateKey [32]byte
 }
 
+type PublicKeys struct {
+	ID       string `json:"id"`
+	EdPub    string `json:"ed_pub"`
+	ECDHPub  string `json:"ecdh_pub"`
+}
+
 type Message struct {
 	From      string `json:"from"`
 	To        string `json:"to"`

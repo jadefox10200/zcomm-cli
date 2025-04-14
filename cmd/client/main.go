@@ -22,12 +22,12 @@ func fetchRecipientKeys(id string) ([32]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	var result map[string]string
+	var result core.PublicKeys
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return pub, err
 	}
 
-	raw, err := base64.StdEncoding.DecodeString(result["ecdh_pub"])
+	raw, err := base64.StdEncoding.DecodeString(result.ECDHPub)
 	if err != nil {
 		return pub, err
 	}
@@ -51,6 +51,11 @@ func publishKeys(ks *KeyStore) error {
 		return err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Failed to poublish keys, server returned status: %s", resp.Status)
+	}
+
 	return nil
 }
 
@@ -68,7 +73,7 @@ func checkForMessages(from string) error {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-
+		
 		var result map[string]string
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return err

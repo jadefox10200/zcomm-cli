@@ -3,25 +3,21 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/jadefox10200/zcomm/core"
 )
 
-type PublicKeys struct {
-	ID       string `json:"id"`
-	EdPub    string `json:"ed_pub"`
-	ECDHPub  string `json:"ecdh_pub"`
-}
-
-var pubKeyDirectory = make(map[string]PublicKeys)
+var pubKeyDirectory = make(map[string]core.PublicKeys)
 
 func handlePublishKeys(w http.ResponseWriter, r *http.Request) {
-	var keys PublicKeys
+	var keys core.PublicKeys
 	if err := json.NewDecoder(r.Body).Decode(&keys); err != nil {
 		http.Error(w, "invalid key data", http.StatusBadRequest)
 		return
 	}
 	pubKeyDirectory[keys.ID] = keys
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "published"})
+	// json.NewEncoder(w).Encode(map[string]string{"status": "published"})
 }
 
 func handleFetchKeys(w http.ResponseWriter, r *http.Request) {

@@ -25,6 +25,10 @@ func handleSend(w http.ResponseWriter, r *http.Request) {
 func handleReceive(w http.ResponseWriter, r *http.Request) {
 	user := r.URL.Query().Get("id")
 	msgs := inbox[user]
+	if len(msgs) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	json.NewEncoder(w).Encode(msgs)
 	inbox[user] = []core.ZMessage{} // clear inbox after delivery
 }
