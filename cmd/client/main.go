@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 	"sort"
+	"strconv"
 
 	"github.com/jadefox10200/zcomm/core"
 	"golang.org/x/crypto/curve25519"
@@ -394,7 +395,7 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
         }
         copy(sharedKey[:], shared)
 
-        dispReply, err := core.NewEncryptedDispatch(zid, []string{disp.From}, nil, nil, "Re: "+disp.Subject, body, disp.ConversationID, edPriv, sharedKey, ephemeralPub)
+        dispReply, err := core.NewEncryptedDispatch(zid, []string{disp.From}, nil, nil, " "+disp.Subject, body, disp.ConversationID, edPriv, sharedKey, ephemeralPub)
         if err != nil {
             fmt.Fprintf(os.Stderr, "Create reply: %v\n", err)
             return false
@@ -477,19 +478,19 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 }
 
 func main() {
-    zid := flag.String("zid", "", "ZID for this client")
-    flag.Parse()
-    if *zid == "" {
-        var err error
-        *zid, err = promptNewOrLogin()
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Failed to get ZID: %v\n", err)
-            os.Exit(1)
-        }
-    }
+	zid := flag.String("zid", "", "ZID for this client")
+	flag.Parse()
+	if *zid == "" {
+		var err error
+		*zid, err = promptNewOrLogin()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get ZID: %v\n", err)
+			os.Exit(1)
+		}
+	}
 
-    // Load keys
-    is, err := LoadIdentity(filepath.Join("data", "identities", fmt.Sprintf("identity_%s.json", *zid)))
+	// Load keys
+	is, err := LoadIdentity(filepath.Join("data", "identities", fmt.Sprintf("identity_%s.json", *zid)))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Load identity: %v\n", err)
 		os.Exit(1)
@@ -514,339 +515,346 @@ func main() {
 	var ecdhPriv [32]byte
 	copy(ecdhPriv[:], ecdhPrivBytes)
 
-    go checkForMessages(*zid, edPriv, ecdhPriv)
-    go pollDelivery(*zid, edPriv)
+	go checkForMessages(*zid, edPriv, ecdhPriv)
+	go pollDelivery(*zid, edPriv)
 
-    reader := bufio.NewReader(os.Stdin)
-    for {
-        fmt.Println("\n1. Send Dispatch")
-        fmt.Println("2. View Inbox")
-        fmt.Println("3. View Pending")
-        fmt.Println("4. View Unanswered")
-        fmt.Println("5. View Conversations")
-        fmt.Println("6. Exit")
-        fmt.Print("Choose an option: ")
+	reader := bufio.NewReader(os.Stdin)
+	for {
+		fmt.Println("\n1. Send Dispatch")
+		fmt.Println("2. View Inbox")
+		fmt.Println("3. View Pending")
+		fmt.Println("4. View Unanswered")
+		fmt.Println("5. View Conversations")
+		fmt.Println("6. Exit")
+		fmt.Print("Choose an option: ")
 
-        choice, _ := reader.ReadString('\n')
-        choice = strings.TrimSpace(choice)
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
 
-        switch choice {
-        case "1":
-            fmt.Print("To: ")
-            to, _ := reader.ReadString('\n')
-            to = strings.TrimSpace(to)
-            fmt.Print("Subject: ")
-            subject, _ := reader.ReadString('\n')
-            subject = strings.TrimSpace(subject)
-            fmt.Print("Body: ")
-            body, _ := reader.ReadString('\n')
-            body = strings.TrimSpace(body)
+		switch choice {
+		case "1":
+			fmt.Print("To: ")
+			to, _ := reader.ReadString('\n')
+			to = strings.TrimSpace(to)
+			fmt.Print("Subject: ")
+			subject, _ := reader.ReadString('\n')
+			subject = strings.TrimSpace(subject)
+			fmt.Print("Body: ")
+			body, _ := reader.ReadString('\n')
+			body = strings.TrimSpace(body)
 
-            keys, err := fetchPublicKeys(to)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Fetch recipient keys: %v\n", err)
-                continue
-            }
+			keys, err := fetchPublicKeys(to)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Fetch recipient keys: %v\n", err)
+				continue
+			}
 
-            ecdhPub, err := base64.StdEncoding.DecodeString(keys.ECDHPub)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Decode recipient ecdh key: %v\n", err)
-                continue
-            }
-            var ecdhPubKey [32]byte
-            copy(ecdhPubKey[:], ecdhPub)
+			ecdhPub, err := base64.StdEncoding.DecodeString(keys.ECDHPub)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Decode recipient ecdh key: %v\n", err)
+				continue
+			}
+			var ecdhPubKey [32]byte
+			copy(ecdhPubKey[:], ecdhPub)
 
-            var ephemeralPriv [32]byte
-            if _, err := rand.Read(ephemeralPriv[:]); err != nil {
-                fmt.Fprintf(os.Stderr, "Generate ephemeral key: %v\n", err)
-                continue
-            }
+			var ephemeralPriv [32]byte
+			if _, err := rand.Read(ephemeralPriv[:]); err != nil {
+				fmt.Fprintf(os.Stderr, "Generate ephemeral key: %v\n", err)
+				continue
+			}
 
-            ephemeralPub, err := curve25519.X25519(ephemeralPriv[:], curve25519.Basepoint)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Generate ephemeral public key: %v\n", err)
-                continue
-            }
+			ephemeralPub, err := curve25519.X25519(ephemeralPriv[:], curve25519.Basepoint)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Generate ephemeral public key: %v\n", err)
+				continue
+			}
 
-            var sharedKey [32]byte
-            shared, err := curve25519.X25519(ephemeralPriv[:], ecdhPubKey[:])
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Derive shared key: %v\n", err)
-                continue
-            }
-            copy(sharedKey[:], shared)
+			var sharedKey [32]byte
+			shared, err := curve25519.X25519(ephemeralPriv[:], ecdhPubKey[:])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Derive shared key: %v\n", err)
+				continue
+			}
+			copy(sharedKey[:], shared)
 
-            disp, err := core.NewEncryptedDispatch(*zid, []string{to}, nil, nil, subject, body, "", edPriv, sharedKey, ephemeralPub)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Create dispatch: %v\n", err)
-                continue
-            }
+			disp, err := core.NewEncryptedDispatch(*zid, []string{to}, nil, nil, subject, body, "", edPriv, sharedKey, ephemeralPub)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Create dispatch: %v\n", err)
+				continue
+			}
 
-            if err := StoreDispatch(*zid, *disp); err != nil {
-                fmt.Fprintf(os.Stderr, "Store dispatch: %v\n", err)
-                continue
-            }
-            if err := StoreBasket(*zid, "out", disp.UUID); err != nil {
-                fmt.Fprintf(os.Stderr, "Store out: %v\n", err)
-                continue
-            }
-            if err := StoreConversation(*zid, disp.ConversationID, disp.UUID, 1); err != nil {
-                fmt.Fprintf(os.Stderr, "Store conversation: %v\n", err)
-                continue
-            }
+			if err := StoreDispatch(*zid, *disp); err != nil {
+				fmt.Fprintf(os.Stderr, "Store dispatch: %v\n", err)
+				continue
+			}
+			if err := StoreBasket(*zid, "out", disp.UUID); err != nil {
+				fmt.Fprintf(os.Stderr, "Store out: %v\n", err)
+				continue
+			}
+			if err := StoreConversation(*zid, disp.ConversationID, disp.UUID, 1); err != nil {
+				fmt.Fprintf(os.Stderr, "Store conversation: %v\n", err)
+				continue
+			}
 
-            data, err := json.Marshal(disp)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Marshal dispatch: %v\n", err)
-                continue
-            }
+			data, err := json.Marshal(disp)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Marshal dispatch: %v\n", err)
+				continue
+			}
 
-            resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Send dispatch: %v\n", err)
-                continue
-            }
-            defer resp.Body.Close()
+			resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Send dispatch: %v\n", err)
+				continue
+			}
+			defer resp.Body.Close()
 
-            if resp.StatusCode != http.StatusOK {
-                body, _ := io.ReadAll(resp.Body)
-                fmt.Fprintf(os.Stderr, "Send dispatch failed: %s\n", string(body))
-                continue
-            }
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Fprintf(os.Stderr, "Send dispatch failed: %s\n", string(body))
+				continue
+			}
 
-            fmt.Printf("Dispatch sent to %s\n", to)
+			fmt.Printf("Dispatch sent to %s\n", to)
 
-        case "2":
-            dispIDs, err := LoadBasket(*zid, "inbox")
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load inbox: %v\n", err)
-                continue
-            }
-            if len(dispIDs) == 0 {
-                fmt.Println("Inbox is empty")
-                continue
-            }
+		case "2":
+			dispIDs, err := LoadBasket(*zid, "inbox")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load inbox: %v\n", err)
+				continue
+			}
+			if len(dispIDs) == 0 {
+				fmt.Println("Inbox is empty")
+				continue
+			}
 
-            dispatches, err := LoadDispatches(*zid)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-                continue
-            }
+			dispatches, err := LoadDispatches(*zid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
+				continue
+			}
 
-            for i, dispID := range dispIDs {
-                for _, disp := range dispatches {
-                    if disp.UUID == dispID {
-                        fmt.Printf("%d. From: %s, Subject: %s\n", i+1, disp.From, disp.Subject)
-                    }
-                }
-            }
+			for i, dispID := range dispIDs {
+				for _, disp := range dispatches {
+					if disp.UUID == dispID {
+						fmt.Printf("%d. From: %s, Subject: %s\n", i+1, disp.From, disp.Subject)
+					}
+				}
+			}
 
-            fmt.Print("Select dispatch number (or 0 to exit): ")
-            var num int
-            fmt.Scanln(&num)
-            if num == 0 {
-                continue
-            }
-            if num < 1 || num > len(dispIDs) {
-                fmt.Println("Invalid selection")
-                continue
-            }
+			fmt.Print("Select dispatch number (or 0 to exit): ")
+			var num int
+			fmt.Scanln(&num)
+			if num == 0 {
+				continue
+			}
+			if num < 1 || num > len(dispIDs) {
+				fmt.Println("Invalid selection")
+				continue
+			}
 
-            var selected core.Dispatch
-            for _, disp := range dispatches {
-                if disp.UUID == dispIDs[num-1] {
-                    selected = disp
-                    break
-                }
-            }
+			var selected core.Dispatch
+			for _, disp := range dispatches {
+				if disp.UUID == dispIDs[num-1] {
+					selected = disp
+					break
+				}
+			}
 
-            if handleDispatchView(*zid, selected, "inbox", edPriv, ecdhPriv) {
-                fmt.Println("Dispatch processed")
-            }
+			if handleDispatchView(*zid, selected, "inbox", edPriv, ecdhPriv) {
+				fmt.Println("Dispatch processed")
+			}
 
-        case "3":
-            dispIDs, err := LoadBasket(*zid, "pending")
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load pending: %v\n", err)
-                continue
-            }
-            if len(dispIDs) == 0 {
-                fmt.Println("Pending is empty")
-                continue
-            }
+		case "3":
+			dispIDs, err := LoadBasket(*zid, "pending")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load pending: %v\n", err)
+				continue
+			}
+			if len(dispIDs) == 0 {
+				fmt.Println("Pending is empty")
+				continue
+			}
 
-            dispatches, err := LoadDispatches(*zid)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-                continue
-            }
+			dispatches, err := LoadDispatches(*zid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
+				continue
+			}
 
-            for i, dispID := range dispIDs {
-                for _, disp := range dispatches {
-                    if disp.UUID == dispID {
-                        fmt.Printf("%d. From: %s, Subject: %s\n", i+1, disp.From, disp.Subject)
-                    }
-                }
-            }
+			for i, dispID := range dispIDs {
+				for _, disp := range dispatches {
+					if disp.UUID == dispID {
+						fmt.Printf("%d. From: %s, Subject: %s\n", i+1, disp.From, disp.Subject)
+					}
+				}
+			}
 
-            fmt.Print("Select dispatch number (or 0 to exit): ")
-            var num int
-            fmt.Scanln(&num)
-            if num == 0 {
-                continue
-            }
-            if num < 1 || num > len(dispIDs) {
-                fmt.Println("Invalid selection")
-                continue
-            }
+			fmt.Print("Select dispatch number (or 0 to exit): ")
+			var num int
+			fmt.Scanln(&num)
+			if num == 0 {
+				continue
+			}
+			if num < 1 || num > len(dispIDs) {
+				fmt.Println("Invalid selection")
+				continue
+			}
 
-            var selected core.Dispatch
-            for _, disp := range dispatches {
-                if disp.UUID == dispIDs[num-1] {
-                    selected = disp
-                    break
-                }
-            }
+			var selected core.Dispatch
+			for _, disp := range dispatches {
+				if disp.UUID == dispIDs[num-1] {
+					selected = disp
+					break
+				}
+			}
 
-            if handleDispatchView(*zid, selected, "pending", edPriv, ecdhPriv) {
-                fmt.Println("Dispatch processed")
-            }
+			if handleDispatchView(*zid, selected, "pending", edPriv, ecdhPriv) {
+				fmt.Println("Dispatch processed")
+			}
 
-        case "4":
-            dispIDs, err := LoadBasket(*zid, "unanswered")
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load unanswered: %v\n", err)
-                continue
-            }
-            if len(dispIDs) == 0 {
-                fmt.Println("No unanswered dispatches")
-                continue
-            }
+		case "4":
+			dispIDs, err := LoadBasket(*zid, "unanswered")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load unanswered: %v\n", err)
+				continue
+			}
+			if len(dispIDs) == 0 {
+				fmt.Println("No unanswered dispatches")
+				continue
+			}
 
-            dispatches, err := LoadDispatches(*zid)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-                continue
-            }
+			dispatches, err := LoadDispatches(*zid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
+				continue
+			}
 
-            for i, dispID := range dispIDs {
-                for _, disp := range dispatches {
-                    if disp.UUID == dispID {
-                        fmt.Printf("%d. To: %s, Subject: %s\n", i+1, disp.To[0], disp.Subject)
-                    }
-                }
-            }
+			for i, dispID := range dispIDs {
+				for _, disp := range dispatches {
+					if disp.UUID == dispID {
+						fmt.Printf("%d. To: %s, Subject: %s\n", i+1, disp.To[0], disp.Subject)
+					}
+				}
+			}
 
-            fmt.Print("Select dispatch number (0 to exit, -N to forget): ")
-            var num int
-            fmt.Scanln(&num)
-            if num == 0 {
-                continue
-            }
-            if num < 0 {
-                num = -num
-                if num < 1 || num > len(dispIDs) {
-                    fmt.Println("Invalid selection")
-                    continue
-                }
-                dispID := dispIDs[num-1]
-                if err := RemoveMessage(*zid, "unanswered", dispID); err != nil {
-                    fmt.Fprintf(os.Stderr, "Forget dispatch: %v\n", err)
-                    continue
-                }
-                fmt.Printf("Dispatch %s forgotten\n", dispID)
-                continue
-            }
-            if num < 1 || num > len(dispIDs) {
-                fmt.Println("Invalid selection")
-                continue
-            }
+			fmt.Print("Select dispatch number (0 to exit, -N to forget): ")
+			var num int
+			fmt.Scanln(&num)
+			if num == 0 {
+				continue
+			}
+			if num < 0 {
+				num = -num
+				if num < 1 || num > len(dispIDs) {
+					fmt.Println("Invalid selection")
+					continue
+				}
+				dispID := dispIDs[num-1]
+				if err := RemoveMessage(*zid, "unanswered", dispID); err != nil {
+					fmt.Fprintf(os.Stderr, "Forget dispatch: %v\n", err)
+					continue
+				}
+				fmt.Printf("Dispatch %s forgotten\n", dispID)
+				continue
+			}
+			if num < 1 || num > len(dispIDs) {
+				fmt.Println("Invalid selection")
+				continue
+			}
 
-            var selected core.Dispatch
-            for _, disp := range dispatches {
-                if disp.UUID == dispIDs[num-1] {
-                    selected = disp
-                    break
-                }
-            }
+			var selected core.Dispatch
+			for _, disp := range dispatches {
+				if disp.UUID == dispIDs[num-1] {
+					selected = disp
+					break
+				}
+			}
 
-            fmt.Printf("To: %s\nSubject: %s\nBody: %s\n", selected.To[0], selected.Subject, selected.Body)
-            fmt.Print("Press Enter to continue...")
-            reader.ReadString('\n')
+			fmt.Printf("To: %s\nSubject: %s\nBody: %s\n", selected.To[0], selected.Subject, selected.Body)
+			fmt.Print("Press Enter to continue...")
+			reader.ReadString('\n')
 
-        case "5":
-            convs, err := LoadConversations(*zid)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
-                continue
-            }
-            if len(convs) == 0 {
-                fmt.Println("No conversations")
-                continue
-            }
+		case "5":
+			convs, err := LoadConversations(*zid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
+				continue
+			}
+			if len(convs) == 0 {
+				fmt.Println("No conversations")
+				continue
+			}
 
-            dispatches, err := LoadDispatches(*zid)
-            if err != nil {
-                fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-                continue
-            }
+			dispatches, err := LoadDispatches(*zid)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
+				continue
+			}
 
-            for _, conv := range convs {
-                fmt.Printf("\nConversation ID: %s\n", conv.ConID)
-                entries := conv.Dispatches
-                sort.Slice(entries, func(i, j int) bool {
-                    return entries[i].SeqNo < entries[j].SeqNo
-                })
-                for _, entry := range entries {
-                    for _, disp := range dispatches {
-                        if disp.UUID == entry.DispID {
-                            fmt.Printf("  %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
-                        }
-                    }
-                }
-            }
+			// Create indexed list of conversations
+			type convEntry struct {
+				ConID      string
+				Dispatches []struct {
+					DispID string
+					SeqNo  int
+				}
+			}
+			convList := make([]convEntry, 0, len(convs))
+			for _, conv := range convs {
+				convList = append(convList, convEntry{ConID: conv.ConID, Dispatches: conv.Dispatches})
+			}
 
-            fmt.Print("Select conversation ID (or empty to exit): ")
-            convID, _ := reader.ReadString('\n')
-            convID = strings.TrimSpace(convID)
-            if convID == "" {
-                continue
-            }
+			// Display conversations with indices
+			for i, conv := range convList {
+				fmt.Printf("\n%d. Conversation ID: %s\n", i+1, conv.ConID)
+				entries := conv.Dispatches
+				sort.Slice(entries, func(i, j int) bool {
+					return entries[i].SeqNo < entries[j].SeqNo
+				})
+				for _, entry := range entries {
+					for _, disp := range dispatches {
+						if disp.UUID == entry.DispID {
+							fmt.Printf("    %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
+						}
+					}
+				}
+			}
 
-            var selectedConv struct {
-                ConID      string
-                Dispatches []struct {
-                    DispID string
-                    SeqNo  int
-                }
-            }
-            for _, conv := range convs {
-                if conv.ConID == convID {
-                    selectedConv = conv
-                    break
-                }
-            }
-            if len(selectedConv.Dispatches) == 0 {
-                fmt.Println("Conversation not found")
-                continue
-            }
+			fmt.Print("Select conversation number (0 to exit): ")
+			input, _ := reader.ReadString('\n')
+			input = strings.TrimSpace(input)
+			if input == "" || input == "0" {
+				continue
+			}
 
-            fmt.Println("\nConversation Thread:")
-            for _, entry := range selectedConv.Dispatches {
-                for _, disp := range dispatches {
-                    if disp.UUID == entry.DispID {
-                        fmt.Printf("  %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
-                    }
-                }
-            }
-            fmt.Print("Press Enter to continue...")
-            reader.ReadString('\n')
+			num, err := strconv.Atoi(input)
+			if err != nil || num < 1 || num > len(convList) {
+				fmt.Println("Invalid selection")
+				continue
+			}
 
-        case "6":
-            os.Exit(0)
+			selectedConv := convList[num-1]
+			fmt.Println("\nConversation Thread:")
+			entries := selectedConv.Dispatches
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].SeqNo < entries[j].SeqNo
+			})
+			for _, entry := range entries {
+				for _, disp := range dispatches {
+					if disp.UUID == entry.DispID {
+						fmt.Printf("  %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
+					}
+				}
+			}
+			fmt.Print("Press Enter to continue...")
+			reader.ReadString('\n')
 
-        default:
-            fmt.Println("Invalid option")
-        }
-    }
+		case "6":
+			os.Exit(0)
+
+		default:
+			fmt.Println("Invalid option")
+		}
+	}
 }
