@@ -22,17 +22,18 @@ type PublicKeys struct {
 }
 
 type Dispatch struct {
-    UUID            string   `json:"uuid"`
-    From            string   `json:"from"`
-    To              []string `json:"to"`
-    CC              []string `json:"cc"`
-    Subject         string   `json:"subject"`
-    Body            string   `json:"body"`
-    Nonce           string   `json:"nonce"`
-    Timestamp       int64    `json:"timestamp"`
-    ConversationID  string   `json:"conversationID"`
-    EphemeralPubKey string   `json:"ephemeralPubKey"`
-    Signature       string   `json:"signature"`
+	UUID            string
+	From            string
+	To              []string
+	CC              []string
+	Subject         string
+	Body            string
+	Nonce           string
+	Timestamp       int64
+	ConversationID  string
+	Signature       string
+	EphemeralPubKey string
+	IsEnd           bool // New field for end dispatch
 }
 
 type Ack struct {
@@ -76,6 +77,7 @@ func NewEncryptedDispatch(from string, to, cc, via []string, subject, body strin
         Timestamp:       timestamp,
         ConversationID:  convID,
         EphemeralPubKey: base64.StdEncoding.EncodeToString(ephemeralPub),
+		IsEnd:           false,
     }
 
     hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)

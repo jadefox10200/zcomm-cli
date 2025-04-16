@@ -160,20 +160,18 @@ func (is *IdentityStore) CreateIfNotExists() (*Identity, error) {
 }
 
 func GenerateAndStoreNewIdentity() (*Identity, error) {
-	fmt.Println("make pub and priv")
+	
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("made pub and priv")
+	
 	ecdh, err := core.GenerateECDHKeyPair()
 	if err != nil {
 		return nil, err
 	}
-
-	fmt.Println("made ecdh")
+	
 	zid := core.GenerateZID(pub)
-	fmt.Println("made zid")
 
 	identity := &Identity{
 		ID:       zid,
@@ -200,13 +198,12 @@ func GenerateAndStoreNewIdentity() (*Identity, error) {
 		return nil, fmt.Errorf("marshal identity: %w", err)
 	}
 
-	fmt.Println("about to post")
 	resp, err := http.Post("http://localhost:8080/identity", "application/json", bytes.NewReader(data))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to register identity with server: %v\n", err)
 		return nil, fmt.Errorf("register identity: %w", err)
 	}
-	fmt.Println("posted...")
+	
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)

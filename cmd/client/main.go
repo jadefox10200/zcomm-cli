@@ -204,6 +204,51 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) 
 			}
 			disp.Body = body
 
+			if disp.IsEnd {
+				// Mark conversation as ended
+				convs, err := LoadConversations(zid)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
+					continue
+				}
+				for i, conv := range convs {
+					if conv.ConID == disp.ConversationID {
+						convs[i].Ended = true
+						break
+					}
+				}
+				path := filepath.Join(zid, "conversations.json")
+				data, err := json.MarshalIndent(convs, "", "  ")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "Marshal conversations: %v\n", err)
+					continue
+				}
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					fmt.Fprintf(os.Stderr, "Write conversations: %v\n", err)
+					continue
+				}
+
+				// Clear baskets
+				for _, basket := range []string{"inbox", "unanswered"} {
+					dispIDs, err := LoadBasket(zid, basket)
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "Load %s: %v\n", basket, err)
+						continue
+					}
+					for _, dispID := range dispIDs {
+						for _, d := range dispatches {
+							if d.UUID == dispID && d.ConversationID == disp.ConversationID {
+								if err := RemoveMessage(zid, basket, dispID); err != nil {
+									fmt.Fprintf(os.Stderr, "Remove from %s: %v\n", basket, err)
+								}
+							}
+						}
+					}
+				}
+				fmt.Printf("Conversation %s ended by %s\n", disp.ConversationID, disp.From)
+				continue
+			}
+
 			if err := StoreDispatch(zid, disp); err != nil {
 				fmt.Fprintf(os.Stderr, "Store dispatch: %v\n", err)
 				continue
@@ -229,7 +274,7 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) 
 					}
 				}
 			}
-			if err := StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo); err != nil {
+			if err := StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo, disp.Subject); err != nil {
 				fmt.Fprintf(os.Stderr, "Store conversation: %v\n", err)
 				continue
 			}
@@ -345,136 +390,235 @@ func min(a, b time.Duration) time.Duration {
 
 // handleDispatchView displays a dispatch and prompts for actions.
 func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) bool {
-    reader := bufio.NewReader(os.Stdin)
-    fmt.Printf("From: %s\nSubject: %s\nBody: %s\n", disp.From, disp.Subject, disp.Body)
-    fmt.Println("1. Answer")
-    fmt.Println("2. Pending")
-    fmt.Println("3. Exit")
-    fmt.Print("Choose an option: ")
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("From: %s\nSubject: %s\nBody: %s\n", disp.From, disp.Subject, disp.Body)
+	fmt.Println("1. Answer")
+	fmt.Println("2. Pending")
+	fmt.Println("3. End Conversation")
+	fmt.Println("4. Exit")
+	fmt.Print("Choose an option: ")
 
-    choice, _ := reader.ReadString('\n')
-    choice = strings.TrimSpace(choice)
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
 
-    switch choice {
-    case "1":
-        fmt.Print("Reply body: ")
-        body, _ := reader.ReadString('\n')
-        body = strings.TrimSpace(body)
+	switch choice {
+	case "1":
+		fmt.Print("Reply body: ")
+		body, _ := reader.ReadString('\n')
+		body = strings.TrimSpace(body)
 
-        keys, err := fetchPublicKeys(disp.From)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Fetch recipient keys: %v\n", err)
-            return false
-        }
+		keys, err := fetchPublicKeys(disp.From)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Fetch recipient keys: %v\n", err)
+			return false
+		}
 
-        ecdhPub, err := base64.StdEncoding.DecodeString(keys.ECDHPub)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Decode ecdh key: %v\n", err)
-            return false
-        }
-        var ecdhPubKey [32]byte
-        copy(ecdhPubKey[:], ecdhPub)
+		ecdhPub, err := base64.StdEncoding.DecodeString(keys.ECDHPub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Decode ecdh key: %v\n", err)
+			return false
+		}
+		var ecdhPubKey [32]byte
+		copy(ecdhPubKey[:], ecdhPub)
 
-        var ephemeralPriv [32]byte
-        if _, err := rand.Read(ephemeralPriv[:]); err != nil {
-            fmt.Fprintf(os.Stderr, "Generate ephemeral key: %v\n", err)
-            return false
-        }
+		var ephemeralPriv [32]byte
+		if _, err := rand.Read(ephemeralPriv[:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Generate ephemeral key: %v\n", err)
+			return false
+		}
 
-        ephemeralPub, err := curve25519.X25519(ephemeralPriv[:], curve25519.Basepoint)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Generate ephemeral public key: %v\n", err)
-            return false
-        }
+		ephemeralPub, err := curve25519.X25519(ephemeralPriv[:], curve25519.Basepoint)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Generate ephemeral public key: %v\n", err)
+			return false
+		}
 
-        var sharedKey [32]byte
-        shared, err := curve25519.X25519(ephemeralPriv[:], ecdhPubKey[:])
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Derive shared key: %v\n", err)
-            return false
-        }
-        copy(sharedKey[:], shared)
+		var sharedKey [32]byte
+		shared, err := curve25519.X25519(ephemeralPriv[:], ecdhPubKey[:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Derive shared key: %v\n", err)
+			return false
+		}
+		copy(sharedKey[:], shared)
 
-        dispReply, err := core.NewEncryptedDispatch(zid, []string{disp.From}, nil, nil, " "+disp.Subject, body, disp.ConversationID, edPriv, sharedKey, ephemeralPub)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Create reply: %v\n", err)
-            return false
-        }
+		dispReply, err := core.NewEncryptedDispatch(zid, []string{disp.From}, nil, nil, disp.Subject, body, disp.ConversationID, edPriv, sharedKey, ephemeralPub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Create reply: %v\n", err)
+			return false
+		}
 
-        if err := StoreDispatch(zid, *dispReply); err != nil {
-            fmt.Fprintf(os.Stderr, "Store reply dispatch: %v\n", err)
-            return false
-        }
-        if err := StoreBasket(zid, "out", dispReply.UUID); err != nil {
-            fmt.Fprintf(os.Stderr, "Store reply out: %v\n", err)
-            return false
-        }
+		if err := StoreDispatch(zid, *dispReply); err != nil {
+			fmt.Fprintf(os.Stderr, "Store reply dispatch: %v\n", err)
+			return false
+		}
+		if err := StoreBasket(zid, "out", dispReply.UUID); err != nil {
+			fmt.Fprintf(os.Stderr, "Store reply out: %v\n", err)
+			return false
+		}
 
-        convs, err := LoadConversations(zid)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
-            return false
-        }
-        seqNo := 1
-        for _, conv := range convs {
-            if conv.ConID == disp.ConversationID {
-                for _, entry := range conv.Dispatches {
-                    if entry.SeqNo >= seqNo {
-                        seqNo = entry.SeqNo + 1
-                    }
-                }
-            }
-        }
-        if err := StoreConversation(zid, dispReply.ConversationID, dispReply.UUID, seqNo); err != nil {
-            fmt.Fprintf(os.Stderr, "Store reply conversation: %v\n", err)
-            return false
-        }
+		convs, err := LoadConversations(zid)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
+			return false
+		}
+		seqNo := 1
+		for _, conv := range convs {
+			if conv.ConID == disp.ConversationID {
+				for _, entry := range conv.Dispatches {
+					if entry.SeqNo >= seqNo {
+						seqNo = entry.SeqNo + 1
+					}
+				}
+			}
+		}
+		if err := StoreConversation(zid, dispReply.ConversationID, dispReply.UUID, seqNo, disp.Subject); err != nil {
+			fmt.Fprintf(os.Stderr, "Store reply conversation: %v\n", err)
+			return false
+		}
 
-        data, err := json.Marshal(dispReply)
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Marshal reply: %v\n", err)
-            return false
-        }
+		data, err := json.Marshal(dispReply)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Marshal reply: %v\n", err)
+			return false
+		}
 
-        resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
-        if err != nil {
-            fmt.Fprintf(os.Stderr, "Send reply: %v\n", err)
-            return false
-        }
-        defer resp.Body.Close()
+		resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Send reply: %v\n", err)
+			return false
+		}
+		defer resp.Body.Close()
 
-        if resp.StatusCode != http.StatusOK {
-            body, _ := io.ReadAll(resp.Body)
-            fmt.Fprintf(os.Stderr, "Send reply failed: %s\n", string(body))
-            return false
-        }
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Send reply failed: %s\n", string(body))
+			return false
+		}
 
-        if err := RemoveMessage(zid, basket, disp.UUID); err != nil {
-            fmt.Fprintf(os.Stderr, "Remove original: %v\n", err)
-            return false
-        }
+		if err := RemoveMessage(zid, basket, disp.UUID); err != nil {
+			fmt.Fprintf(os.Stderr, "Remove original: %v\n", err)
+			return false
+		}
 
-        fmt.Printf("Reply sent to %s\n", disp.From)
-        return true
+		fmt.Printf("Reply sent to %s\n", disp.From)
+		return true
 
-    case "2":
-        if basket != "pending" {
-            if err := MoveMessage(zid, basket, "pending", disp.UUID); err != nil {
-                fmt.Fprintf(os.Stderr, "Move to pending: %v\n", err)
-                return false
-            }
-            fmt.Println("Dispatch moved to pending")
-            return true
-        }
-        return false
+	case "2":
+		if basket != "pending" {
+			if err := MoveMessage(zid, basket, "pending", disp.UUID); err != nil {
+				fmt.Fprintf(os.Stderr, "Move to pending: %v\n", err)
+				return false
+			}
+			fmt.Println("Dispatch moved to pending")
+			return true
+		}
+		return false
 
-    case "3":
-        return false
+	case "3":
+		keys, err := fetchPublicKeys(disp.From)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Fetch recipient keys: %v\n", err)
+			return false
+		}
 
-    default:
-        fmt.Println("Invalid option")
-        return false
-    }
+		ecdhPub, err := base64.StdEncoding.DecodeString(keys.ECDHPub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Decode ecdh key: %v\n", err)
+			return false
+		}
+		var ecdhPubKey [32]byte
+		copy(ecdhPubKey[:], ecdhPub)
+
+		var ephemeralPriv [32]byte
+		if _, err := rand.Read(ephemeralPriv[:]); err != nil {
+			fmt.Fprintf(os.Stderr, "Generate ephemeral key: %v\n", err)
+			return false
+		}
+
+		ephemeralPub, err := curve25519.X25519(ephemeralPriv[:], curve25519.Basepoint)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Generate ephemeral public key: %v\n", err)
+			return false
+		}
+
+		var sharedKey [32]byte
+		shared, err := curve25519.X25519(ephemeralPriv[:], ecdhPubKey[:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Derive shared key: %v\n", err)
+			return false
+		}
+		copy(sharedKey[:], shared)
+
+		dispEnd, err := core.NewEncryptedDispatch(zid, []string{disp.From}, nil, nil, disp.Subject, "", disp.ConversationID, edPriv, sharedKey, ephemeralPub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Create end dispatch: %v\n", err)
+			return false
+		}
+		dispEnd.IsEnd = true // Assumes new field in core.Dispatch
+
+		if err := StoreDispatch(zid, *dispEnd); err != nil {
+			fmt.Fprintf(os.Stderr, "Store end dispatch: %v\n", err)
+			return false
+		}
+		if err := StoreBasket(zid, "out", dispEnd.UUID); err != nil {
+			fmt.Fprintf(os.Stderr, "Store end out: %v\n", err)
+			return false
+		}
+
+		convs, err := LoadConversations(zid)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
+			return false
+		}
+		seqNo := 1
+		for _, conv := range convs {
+			if conv.ConID == disp.ConversationID {
+				for _, entry := range conv.Dispatches {
+					if entry.SeqNo >= seqNo {
+						seqNo = entry.SeqNo + 1
+					}
+				}
+			}
+		}
+		if err := StoreConversation(zid, dispEnd.ConversationID, dispEnd.UUID, seqNo, disp.Subject); err != nil {
+			fmt.Fprintf(os.Stderr, "Store end conversation: %v\n", err)
+			return false
+		}
+
+		data, err := json.Marshal(dispEnd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Marshal end dispatch: %v\n", err)
+			return false
+		}
+
+		resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Send end dispatch: %v\n", err)
+			return false
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Fprintf(os.Stderr, "Send end failed: %s\n", string(body))
+			return false
+		}
+
+		if err := RemoveMessage(zid, basket, disp.UUID); err != nil {
+			fmt.Fprintf(os.Stderr, "Remove original: %v\n", err)
+			return false
+		}
+
+		fmt.Println("Conversation ended")
+		return true
+
+	case "4":
+		return false
+
+	default:
+		fmt.Println("Invalid option")
+		return false
+	}
 }
 
 func main() {
@@ -591,7 +735,7 @@ func main() {
 				fmt.Fprintf(os.Stderr, "Store out: %v\n", err)
 				continue
 			}
-			if err := StoreConversation(*zid, disp.ConversationID, disp.UUID, 1); err != nil {
+			if err := StoreConversation(*zid, disp.ConversationID, disp.UUID, 1, subject); err != nil {
 				fmt.Fprintf(os.Stderr, "Store conversation: %v\n", err)
 				continue
 			}
@@ -795,19 +939,33 @@ func main() {
 			// Create indexed list of conversations
 			type convEntry struct {
 				ConID      string
+				Subject    string
 				Dispatches []struct {
 					DispID string
 					SeqNo  int
 				}
+				Ended bool
 			}
 			convList := make([]convEntry, 0, len(convs))
 			for _, conv := range convs {
-				convList = append(convList, convEntry{ConID: conv.ConID, Dispatches: conv.Dispatches})
+				if !conv.Ended {
+					convList = append(convList, convEntry{
+						ConID:      conv.ConID,
+						Subject:    conv.Subject,
+						Dispatches: conv.Dispatches,
+						Ended:      conv.Ended,
+					})
+				}
+			}
+
+			if len(convList) == 0 {
+				fmt.Println("No active conversations")
+				continue
 			}
 
 			// Display conversations with indices
 			for i, conv := range convList {
-				fmt.Printf("\n%d. Conversation ID: %s\n", i+1, conv.ConID)
+				fmt.Printf("\n%d. Subject: %s (ID: %s)\n", i+1, conv.Subject, conv.ConID)
 				entries := conv.Dispatches
 				sort.Slice(entries, func(i, j int) bool {
 					return entries[i].SeqNo < entries[j].SeqNo

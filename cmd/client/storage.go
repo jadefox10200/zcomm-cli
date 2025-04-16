@@ -5,26 +5,28 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/jadefox10200/zcomm/core"
 )
 
-// StoreDispatch appends an immutable dispatch to dispatches.json.
+var (
+	dispatchesMu sync.RWMutex
+	dispatches   = make(map[string][]core.Dispatch)
+	basketsMu    sync.RWMutex
+	baskets      = make(map[string]map[string][]string)
+)
+
 func StoreDispatch(zid string, disp core.Dispatch) error {
 	path := filepath.Join(zid, "dispatches.json")
-	var dispatches []core.Dispatch
+	dispatchesMu.Lock()
+	defer dispatchesMu.Unlock()
 
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read dispatches: %w", err)
-		}
-		if err := json.Unmarshal(data, &dispatches); err != nil {
-			return fmt.Errorf("unmarshal dispatches: %w", err)
-		}
+	if dispatches[zid] == nil {
+		dispatches[zid] = make([]core.Dispatch, 0)
 	}
 
-	dispatches = append(dispatches, disp)
+	dispatches[zid] = append(dispatches[zid], disp)
 	data, err := json.MarshalIndent(dispatches, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal dispatches: %w", err)
@@ -36,20 +38,149 @@ func StoreDispatch(zid string, disp core.Dispatch) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// StoreConversation adds a dispatch to a conversation thread.
-func StoreConversation(zid, conID, dispID string, seqNo int) error {
-	path := filepath.Join(zid, "conversations.json")
-	type conversationEntry struct {
-		DispID string `json:"dispID"`
-		SeqNo  int    `json:"seqNo"`
-	}
-	type conversation struct {
-		ConID      string             `json:"conID"`
-		Dispatches []conversationEntry `json:"dispatches"`
-	}
-	var convs []conversation
+func LoadDispatches(zid string) ([]core.Dispatch, error) {
+	path := filepath.Join(zid, "dispatches.json")
+	dispatchesMu.RLock()
+	defer dispatchesMu.RUnlock()
 
-	if _, err := os.Stat(path); err == nil {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read dispatches: %w", err)
+	}
+
+	var dispMap map[string][]core.Dispatch
+	if err := json.Unmarshal(data, &dispMap); err != nil {
+		return nil, fmt.Errorf("unmarshal dispatches: %w", err)
+	}
+
+	return dispMap[zid], nil
+}
+
+func StoreBasket(zid, basket, dispID string) error {
+	path := filepath.Join(zid, basket+".json")
+	basketsMu.Lock()
+	defer basketsMu.Unlock()
+
+	if baskets[zid] == nil {
+		baskets[zid] = make(map[string][]string)
+	}
+	if baskets[zid][basket] == nil {
+		baskets[zid][basket] = make([]string, 0)
+	}
+
+	baskets[zid][basket] = append(baskets[zid][basket], dispID)
+	data, err := json.MarshalIndent(baskets[zid], "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", basket, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create %s dir: %w", basket, err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func LoadBasket(zid, basket string) ([]string, error) {
+	path := filepath.Join(zid, basket+".json")
+	basketsMu.RLock()
+	defer basketsMu.RUnlock()
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", basket, err)
+	}
+
+	var basketMap map[string][]string
+	if err := json.Unmarshal(data, &basketMap); err != nil {
+		return nil, fmt.Errorf("unmarshal %s: %w", basket, err)
+	}
+
+	return basketMap[basket], nil
+}
+
+func MoveMessage(zid, fromBasket, toBasket, dispID string) error {
+	basketsMu.Lock()
+	defer basketsMu.Unlock()
+
+	if baskets[zid] == nil {
+		baskets[zid] = make(map[string][]string)
+	}
+	if baskets[zid][fromBasket] == nil {
+		baskets[zid][fromBasket] = make([]string, 0)
+	}
+	if baskets[zid][toBasket] == nil {
+		baskets[zid][toBasket] = make([]string, 0)
+	}
+
+	// Remove from fromBasket
+	var newFromList []string
+	for _, id := range baskets[zid][fromBasket] {
+		if id != dispID {
+			newFromList = append(newFromList, id)
+		}
+	}
+	baskets[zid][fromBasket] = newFromList
+
+	// Add to toBasket
+	baskets[zid][toBasket] = append(baskets[zid][toBasket], dispID)
+
+	// Write both baskets to disk
+	for _, basket := range []string{fromBasket, toBasket} {
+		path := filepath.Join(zid, basket+".json")
+		data, err := json.MarshalIndent(baskets[zid], "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal %s: %w", basket, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return fmt.Errorf("create %s dir: %w", basket, err)
+		}
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			return fmt.Errorf("write %s: %w", basket, err)
+		}
+	}
+
+	return nil
+}
+
+func RemoveMessage(zid, basket, dispID string) error {
+	path := filepath.Join(zid, basket+".json")
+	basketsMu.Lock()
+	defer basketsMu.Unlock()
+
+	if baskets[zid] == nil {
+		return nil
+	}
+
+	var newList []string
+	for _, id := range baskets[zid][basket] {
+		if id != dispID {
+			newList = append(newList, id)
+		}
+	}
+	baskets[zid][basket] = newList
+
+	data, err := json.MarshalIndent(baskets[zid], "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal %s: %w", basket, err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func StoreConversation(zid, conID, dispID string, seqNo int, subject string) error {
+	path := filepath.Join(zid, "conversations.json")
+	dispatchesMu.Lock()
+	defer dispatchesMu.Unlock()
+
+	var convs []Conversation
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return fmt.Errorf("read conversations: %w", err)
@@ -59,7 +190,7 @@ func StoreConversation(zid, conID, dispID string, seqNo int) error {
 		}
 	}
 
-	var conv *conversation
+	var conv *Conversation
 	for i, c := range convs {
 		if c.ConID == conID {
 			conv = &convs[i]
@@ -67,11 +198,20 @@ func StoreConversation(zid, conID, dispID string, seqNo int) error {
 		}
 	}
 	if conv == nil {
-		conv = &conversation{ConID: conID, Dispatches: []conversationEntry{}}
-		convs = append(convs, *conv)
+		convs = append(convs, Conversation{
+			ConID:      conID,
+			Subject:    subject,
+			Dispatches: nil,
+			Ended:      false,
+		})
+		conv = &convs[len(convs)-1]
 	}
 
-	conv.Dispatches = append(conv.Dispatches, conversationEntry{DispID: dispID, SeqNo: seqNo})
+	conv.Dispatches = append(conv.Dispatches, struct {
+		DispID string
+		SeqNo  int
+	}{DispID: dispID, SeqNo: seqNo})
+
 	data, err := json.MarshalIndent(convs, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal conversations: %w", err)
@@ -83,154 +223,21 @@ func StoreConversation(zid, conID, dispID string, seqNo int) error {
 	return os.WriteFile(path, data, 0600)
 }
 
-// StoreBasket adds a DispID to a basket file.
-func StoreBasket(zid, basket, dispID string) error {
-	path := filepath.Join(zid, basket+".json")
-	var dispIDs []string
-
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", basket, err)
-		}
-		if err := json.Unmarshal(data, &dispIDs); err != nil {
-			return fmt.Errorf("unmarshal %s: %w", basket, err)
-		}
-	}
-
-	dispIDs = append(dispIDs, dispID)
-	data, err := json.MarshalIndent(dispIDs, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", basket, err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return fmt.Errorf("create %s dir: %w", basket, err)
-	}
-	return os.WriteFile(path, data, 0600)
-}
-
-// LoadBasket retrieves DispIDs from a basket.
-func LoadBasket(zid, basket string) ([]string, error) {
-	path := filepath.Join(zid, basket+".json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, nil
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", basket, err)
-	}
-
-	var dispIDs []string
-	if err := json.Unmarshal(data, &dispIDs); err != nil {
-		return nil, fmt.Errorf("unmarshal %s: %w", basket, err)
-	}
-	return dispIDs, nil
-}
-
-// MoveMessage moves a DispID between baskets.
-func MoveMessage(zid, fromBasket, toBasket, dispID string) error {
-	// Remove from source
-	path := filepath.Join(zid, fromBasket+".json")
-	var fromDispIDs []string
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", fromBasket, err)
-		}
-		if err := json.Unmarshal(data, &fromDispIDs); err != nil {
-			return fmt.Errorf("unmarshal %s: %w", fromBasket, err)
-		}
-	}
-
-	var newFromDispIDs []string
-	found := false
-	for _, id := range fromDispIDs {
-		if id != dispID {
-			newFromDispIDs = append(newFromDispIDs, id)
-		} else {
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("dispatch %s not found in %s", dispID, fromBasket)
-	}
-
-	data, err := json.MarshalIndent(newFromDispIDs, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", fromBasket, err)
-	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
-		return fmt.Errorf("write %s: %w", fromBasket, err)
-	}
-
-	// Add to destination
-	return StoreBasket(zid, toBasket, dispID)
-}
-
-// RemoveMessage removes a DispID from a basket.
-func RemoveMessage(zid, basket, dispID string) error {
-	path := filepath.Join(zid, basket+".json")
-	var dispIDs []string
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", basket, err)
-		}
-		if err := json.Unmarshal(data, &dispIDs); err != nil {
-			return fmt.Errorf("unmarshal %s: %w", basket, err)
-		}
-	}
-
-	var newDispIDs []string
-	found := false
-	for _, id := range dispIDs {
-		if id != dispID {
-			newDispIDs = append(newDispIDs, id)
-		} else {
-			found = true
-		}
-	}
-	if !found {
-		return fmt.Errorf("dispatch %s not found in %s", dispID, basket)
-	}
-
-	data, err := json.MarshalIndent(newDispIDs, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal %s: %w", basket, err)
-	}
-	return os.WriteFile(path, data, 0600)
-}
-
-// LoadDispatches retrieves all dispatches.
-func LoadDispatches(zid string) ([]core.Dispatch, error) {
-	path := filepath.Join(zid, "dispatches.json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return nil, nil
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read dispatches: %w", err)
-	}
-
-	var dispatches []core.Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		return nil, fmt.Errorf("unmarshal dispatches: %w", err)
-	}
-	return dispatches, nil
-}
-
-// LoadConversations retrieves conversation threads.
-func LoadConversations(zid string) ([]struct {
+type Conversation struct {
 	ConID      string
+	Subject    string
 	Dispatches []struct {
 		DispID string
 		SeqNo  int
 	}
-}, error) {
+	Ended bool
+}
+
+func LoadConversations(zid string) ([]Conversation, error) {
 	path := filepath.Join(zid, "conversations.json")
+	dispatchesMu.RLock()
+	defer dispatchesMu.RUnlock()
+
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -240,15 +247,15 @@ func LoadConversations(zid string) ([]struct {
 		return nil, fmt.Errorf("read conversations: %w", err)
 	}
 
-	var convs []struct {
-		ConID      string
-		Dispatches []struct {
-			DispID string
-			SeqNo  int
-		}
-	}
+	var convs []Conversation
 	if err := json.Unmarshal(data, &convs); err != nil {
 		return nil, fmt.Errorf("unmarshal conversations: %w", err)
 	}
+
 	return convs, nil
+}
+
+
+type identityStore struct {
+	identity *Identity
 }
