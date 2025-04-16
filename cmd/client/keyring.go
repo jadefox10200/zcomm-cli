@@ -1,3 +1,4 @@
+//cmd/client/keyring.go
 package main
 
 import (

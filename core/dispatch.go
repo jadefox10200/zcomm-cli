@@ -21,20 +21,28 @@ type PublicKeys struct {
 }
 
 type Dispatch struct {
-	From            string   `json:"from"`            // Sender zID
-	To              []string `json:"to"`              // Recipient zIDs
-	CC              []string `json:"cc"`              // CC zIDs
-	Via             []string `json:"via"`             // Intermediary zIDs
-	Subject         string   `json:"subject"`         // Dispatch subject
-	Body            string   `json:"body"`            // Encrypted body
-	Attachments     []string `json:"attachments"`     // Encrypted file IDs (future)
+	From            string   `json:"from"`
+	To              []string `json:"to"`
+	CC              []string `json:"cc"`
+	Via             []string `json:"via"`
+	Subject         string   `json:"subject"`
+	Body            string   `json:"body"`
+	Attachments     []string `json:"attachments"`
 	Timestamp       int64    `json:"timestamp"`
-	ConversationID  string   `json:"conversation_id"` // UUID for conversation
-	Status          string   `json:"status"`          // "open", "closed"
+	ConversationID  string   `json:"conversation_id"`
+	Status          string   `json:"status"`
 	Signature       string   `json:"signature"`
 	EphemeralPubKey string   `json:"ephemeral_pub_key"`
 	Nonce           string   `json:"nonce"`
-	Basket          string   `json:"basket"` // IN, OUT, PENDING, ARCHIVED
+	Basket          string   `json:"basket"`
+}
+
+type Ack struct {
+	Timestamp      int64  `json:"timestamp"`
+	ConversationID string `json:"conversationID"`
+	From           string `json:"from"`
+	Status         string `json:"status"`
+	Signature      string `json:"signature"`
 }
 
 func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, attachments []string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte, convID string) (*Dispatch, error) {
@@ -63,7 +71,7 @@ func NewEncryptedDispatch(from string, to, cc, via []string, subject, body strin
 		From:            from,
 		To:              to,
 		CC:              cc,
-		Via:             via,
+		Via:              via,
 		Subject:         subject,
 		Body:            base64.StdEncoding.EncodeToString(encrypted),
 		Attachments:     attachments,

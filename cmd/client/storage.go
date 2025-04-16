@@ -13,30 +13,8 @@ var (
 	storageMu sync.RWMutex
 )
 
-func StoreInboxMessage(zid string, dispatch core.Dispatch) error {
-	path := filepath.Join(zid, "inbox.json")
-	return storeMessage(path, dispatch)
-}
-
-func StoreSentMessage(zid string, dispatch core.Dispatch) error {
-	path := filepath.Join(zid, "sent.json")
-	return storeMessage(path, dispatch)
-}
-
-func StorePendingMessage(zid string, dispatch core.Dispatch) error {
-	path := filepath.Join(zid, "pending.json")
-	return storeMessage(path, dispatch)
-}
-
-func StoreOutMessage(zid string, dispatch core.Dispatch) error {
-	path := filepath.Join(zid, "out.json")
-	return storeMessage(path, dispatch)
-}
-
-func storeMessage(path string, dispatch core.Dispatch) error {
-	storageMu.Lock()
-	defer storageMu.Unlock()
-
+// appendMessage appends a dispatch to a file without locking (caller must lock).
+func appendMessage(path string, dispatch core.Dispatch) error {
 	var dispatches []core.Dispatch
 	if _, err := os.Stat(path); err == nil {
 		data, err := os.ReadFile(path)
@@ -61,6 +39,66 @@ func storeMessage(path string, dispatch core.Dispatch) error {
 		return err
 	}
 	return os.WriteFile(path, data, 0600)
+}
+
+func StoreInboxMessage(zid string, dispatch core.Dispatch) error {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+	return appendMessage(filepath.Join(zid, "inbox.json"), dispatch)
+}
+
+func StoreSentMessage(zid string, dispatch core.Dispatch) error {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+	return appendMessage(filepath.Join(zid, "sent.json"), dispatch)
+}
+
+func StorePendingMessage(zid string, dispatch core.Dispatch) error {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+	return appendMessage(filepath.Join(zid, "pending.json"), dispatch)
+}
+
+func StoreOutMessage(zid string, dispatch core.Dispatch) error {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+	return appendMessage(filepath.Join(zid, "out.json"), dispatch)
+}
+
+func MoveMessage(zid, fromBasket, toBasket string, dispatch core.Dispatch) error {
+	storageMu.Lock()
+	defer storageMu.Unlock()
+
+	fromPath := filepath.Join(zid, fromBasket+".json")
+	var fromDispatches []core.Dispatch
+	if _, err := os.Stat(fromPath); err == nil {
+		data, err := os.ReadFile(fromPath)
+		if err != nil {
+			return err
+		}
+		if len(data) > 0 {
+			if err := json.Unmarshal(data, &fromDispatches); err != nil {
+				return err
+			}
+		}
+	}
+
+	var updatedFrom []core.Dispatch
+	for _, d := range fromDispatches {
+		if d.Timestamp != dispatch.Timestamp || d.ConversationID != dispatch.ConversationID {
+			updatedFrom = append(updatedFrom, d)
+		}
+	}
+
+	data, err := json.MarshalIndent(updatedFrom, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(fromPath, data, 0600); err != nil {
+		return err
+	}
+
+	return appendMessage(filepath.Join(zid, toBasket+".json"), dispatch)
 }
 
 func LoadInboxMessages(zid string) ([]core.Dispatch, error) {
@@ -101,40 +139,4 @@ func loadMessages(path string) ([]core.Dispatch, error) {
 		return nil, err
 	}
 	return dispatches, nil
-}
-
-func MoveMessage(zid, fromBasket, toBasket string, dispatch core.Dispatch) error {
-	storageMu.Lock()
-	defer storageMu.Unlock();
-
-	fromPath := filepath.Join(zid, fromBasket+".json")
-	var fromDispatches []core.Dispatch
-	if _, err := os.Stat(fromPath); err == nil {
-		data, err := os.ReadFile(fromPath)
-		if err != nil {
-			return err
-		}
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &fromDispatches); err != nil {
-				return err
-			}
-		}
-	}
-
-	var updatedFrom []core.Dispatch
-	for _, d := range fromDispatches {
-		if d.Timestamp != dispatch.Timestamp || d.ConversationID != dispatch.ConversationID {
-			updatedFrom = append(updatedFrom, d)
-		}
-	}
-
-	data, err := json.MarshalIndent(updatedFrom, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(fromPath, data, 0600); err != nil {
-		return err
-	}
-
-	return storeMessage(filepath.Join(zid, toBasket+".json"), dispatch)
 }
