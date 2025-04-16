@@ -6,6 +6,10 @@
 *.test
 cmd/client/client
 cmd/server/server
+cmd/client/zcomm_storage/*
+cmd/client/z*
+data
+
 
 # IDEs
 .vscode/

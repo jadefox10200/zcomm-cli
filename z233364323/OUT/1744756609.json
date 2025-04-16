@@ -1,0 +1,18 @@
+{
+  "from": "z233364323",
+  "to": [
+    "z454365764"
+  ],
+  "cc": null,
+  "via": null,
+  "subject": "test",
+  "body": "ol/ise2bV2GWNzKUB0gwwWEuEsOW",
+  "attachments": null,
+  "timestamp": 1744756609,
+  "conversation_id": "c74aca9a-9d31-43e0-b810-ff349a606600",
+  "status": "open",
+  "signature": "iH+U7iu4+x6rk49R4y8jt/FrT64jIdz+DobharzEARrp6c44i0yAHEBy4FqIjCuuA7k+UjrCMA1w0lgsGIGxCQ==",
+  "ephemeral_pub_key": "onx5IZbG09O9ag/otc40atNxBsV5+HOUBBBGj5nZazs=",
+  "nonce": "jC/cO4eB8IzEzhix",
+  "basket": "OUT"
+}

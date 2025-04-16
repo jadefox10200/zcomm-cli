@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/base32"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -14,48 +15,6 @@ import (
 type ECDHKeyPair struct {
 	PublicKey  [32]byte
 	PrivateKey [32]byte
-}
-
-type PublicKeys struct {
-	ID       string `json:"id"`
-	EdPub    string `json:"ed_pub"`
-	ECDHPub  string `json:"ecdh_pub"`
-}
-
-type Message struct {
-	From      string `json:"from"`
-	To        string `json:"to"`
-	Type      string `json:"type"`      // e.g., "text"
-	Body      string `json:"body"`      // encrypted (base64)
-	Signature string `json:"signature"` // base64-encoded signature
-}
-
-// -----------------
-// ECDH + AES-GCM
-// -----------------
-
-func EncryptMessage(plaintext []byte, key []byte) (ciphertext []byte, nonce []byte, err error) {
-	return EncryptAESGCM(key, plaintext)
-}
-
-func EncryptWithNonce(key []byte, plaintext []byte) (ciphertext []byte, nonce []byte, err error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	aesgcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	nonce = make([]byte, aesgcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, nil, err
-	}
-
-	ciphertext = aesgcm.Seal(nil, nonce, plaintext, nil)
-	return ciphertext, nonce, nil
 }
 
 func GenerateECDHKeyPair() (*ECDHKeyPair, error) {
@@ -73,13 +32,14 @@ func GenerateECDHKeyPair() (*ECDHKeyPair, error) {
 	return &ECDHKeyPair{PublicKey: pubKey, PrivateKey: priv}, nil
 }
 
-func DeriveSharedSecret(privKey, pubKey [32]byte) ([]byte, error) {
-	secret, err := curve25519.X25519(privKey[:], pubKey[:])
+func DeriveSharedSecret(priv, pub [32]byte) ([32]byte, error) {
+	shared, err := curve25519.X25519(priv[:], pub[:])
 	if err != nil {
-		return nil, err
+		return [32]byte{}, err
 	}
-	hash := sha256.Sum256(secret) // derive 32-byte AES key
-	return hash[:], nil
+	var result [32]byte
+	copy(result[:], shared)
+	return result, nil
 }
 
 func EncryptAESGCM(key []byte, plaintext []byte) ([]byte, []byte, error) {
@@ -121,11 +81,6 @@ func DecryptAESGCM(key []byte, nonce []byte, ciphertext []byte) ([]byte, error) 
 	return plaintext, nil
 }
 
-
-// -----------------
-// Signing
-// -----------------
-
 func SignMessage(privateKey ed25519.PrivateKey, messageBody []byte) string {
 	sig := ed25519.Sign(privateKey, messageBody)
 	return base64.StdEncoding.EncodeToString(sig)
@@ -139,24 +94,24 @@ func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25
 	return ed25519.Verify(pubKey, messageBody, sig)
 }
 
-func DecryptMessage(msg *ZMessage, sharedKey []byte) (string, error) {
-	ciphertext, err := base64.StdEncoding.DecodeString(msg.Body)
-	if err != nil {
-		return "", err
+func GenerateZID(pub ed25519.PublicKey) string {
+	hash := sha256.Sum256(pub)
+	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(hash[:])
+	numeric := ""
+	for _, r := range encoded {
+		if len(numeric) == 9 {
+			break
+		}
+		if r >= '2' && r <= '7' {
+			numeric += string(r)
+		}
 	}
-
-	nonce, err := base64.StdEncoding.DecodeString(msg.Nonce)
-	if err != nil {
-		return "", err
+	for len(numeric) < 9 {
+		numeric += "0"
 	}
-
-	plaintext, err := DecryptAESGCM(sharedKey, nonce, ciphertext)
-	if err != nil {
-		return "", err
-	}
-
-	return string(plaintext), nil
+	return "z" + numeric
 }
 
-
-
+func EncodeKey(key []byte) string {
+	return base64.StdEncoding.EncodeToString(key)
+}

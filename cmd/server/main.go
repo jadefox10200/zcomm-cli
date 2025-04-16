@@ -3,29 +3,30 @@ package main
 import (
 	"log"
 	"net/http"
-
-	"github.com/jadefox10200/zcomm/cmd/server/handlers"
-	"github.com/jadefox10200/zcomm/cmd/server/storage"
 )
 
 func main() {
 	// Load persistent stores
-	keyStore, err := storage.NewKeyStore("data/pubkeys.json")
+	keyStore, err := NewKeyStore("data/pubkeys.json")
 	if err != nil {
 		log.Fatalf("Failed to load key store: %v", err)
 	}
 
-	identityStore, err := storage.NewIdentityStore("data/identities.json")
+	identityStore, err := NewIdentityStore("data/identities.json")
 	if err != nil {
 		log.Fatalf("Failed to load identity store: %v", err)
 	}
 
+	// Initialize inbox handler
+	inbox := NewInbox(keyStore)
+
 	// Register HTTP routes
-	http.HandleFunc("/identity", handlers.HandleIdentity(identityStore, keyStore))
-	http.HandleFunc("/send", handlers.HandleSend())
-	http.HandleFunc("/receive", handlers.HandleReceive(keyStore))
-	http.HandleFunc("/publish", handlers.HandlePublishKeys(keyStore))
-	http.HandleFunc("/pubkey", handlers.HandleFetchKeys(keyStore))
+	http.HandleFunc("/identity", HandleIdentity(identityStore, keyStore))
+	http.HandleFunc("/send", inbox.HandleSend)
+	http.HandleFunc("/receive", inbox.HandleReceive)
+	http.HandleFunc("/confirm", inbox.HandleConfirm)
+	http.HandleFunc("/publish", HandlePublishKeys(keyStore))
+	http.HandleFunc("/pubkey", HandleFetchKeys(keyStore))
 
 	log.Println("ZComm Switchboard server running on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))

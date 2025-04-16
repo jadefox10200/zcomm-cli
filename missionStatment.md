@@ -41,11 +41,32 @@ Zcomm’s long-term vision is to become a secure, full-featured messaging **plat
 
 ---
 
-### Looking Ahead: The Future of Zcomm
+### Identity & Usability
+
+- **Phone-Number Style ID System**  
+  Each Zcomm user is assigned a unique, globally discoverable **numeric ID**—similar to a phone number. This ID is cryptographically generated and serves as the user’s core identity within the system. It can be exchanged easily between users, read aloud, or printed—making it **practical and accessible**.
+
+- **Local Aliases and Contacts**  
+  Users can assign **local aliases** (nicknames) to the IDs they communicate with—offering a friendly UI layer without compromising anonymity or requiring global registration. Aliases are stored locally, and users retain full control over how they label or recognize others.
+
+- **Multi-Account Support**  
+  Zcomm supports the ability to **log in as multiple identities**. This enables users to separate communication contexts—for example, maintaining distinct IDs for **personal and professional** communication. A future version of the client will present these identities in a unified interface with shared access to inboxes and messaging tools.
+
+---
+
+### Looking Ahead: Verified Identities and Structure
+
+- In time, Zcomm may evolve toward a **universal identity model**, potentially becoming the **de facto secure identity provider**. This would enable:
+  - A **master ID** tied to a unique user (potentially verified via trusted institutions or proofs),
+  - Sub-identities for **work**, **organizations**, or **specific roles** (like departments or teams),
+  - Privacy-preserving controls to manage visibility, permissions, and exposure of real-world information.
+
+- This structure could offer long-term solutions to identity spam, impersonation, and untrusted communication—something lacking in today’s platforms. Zcomm has the potential to become **the messaging and identity layer** for the next era of trusted digital communication.
+
+---
 
 Zcomm is being developed not just as software—but as a **mission-driven platform** to empower secure, action-oriented communication. The goal is a highly usable **cross-platform application**, backed by a clean, CLI-compatible protocol that can be embedded into various tools, workflows, and services.
 
 Its architecture is being built with care to avoid code waste and future rewrites—abstracting messaging state, encryption logic, and communication flow in a modular way that will easily port to future UI frameworks or mobile/desktop clients.
 
 Whether for personal purpose, life goals, business coordination, or activism—Zcomm is a tool to **securely communicate, track intent, and act with clarity**.
-
