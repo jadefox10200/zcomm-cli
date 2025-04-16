@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	// "golang.org/x/crypto/chacha20poly1305"
 	"github.com/google/uuid"
 )
 
@@ -21,20 +22,17 @@ type PublicKeys struct {
 }
 
 type Dispatch struct {
-	From            string   `json:"from"`
-	To              []string `json:"to"`
-	CC              []string `json:"cc"`
-	Via             []string `json:"via"`
-	Subject         string   `json:"subject"`
-	Body            string   `json:"body"`
-	Attachments     []string `json:"attachments"`
-	Timestamp       int64    `json:"timestamp"`
-	ConversationID  string   `json:"conversation_id"`
-	Status          string   `json:"status"`
-	Signature       string   `json:"signature"`
-	EphemeralPubKey string   `json:"ephemeral_pub_key"`
-	Nonce           string   `json:"nonce"`
-	Basket          string   `json:"basket"`
+    UUID            string   `json:"uuid"`
+    From            string   `json:"from"`
+    To              []string `json:"to"`
+    CC              []string `json:"cc"`
+    Subject         string   `json:"subject"`
+    Body            string   `json:"body"`
+    Nonce           string   `json:"nonce"`
+    Timestamp       int64    `json:"timestamp"`
+    ConversationID  string   `json:"conversationID"`
+    EphemeralPubKey string   `json:"ephemeralPubKey"`
+    Signature       string   `json:"signature"`
 }
 
 type Ack struct {
@@ -45,53 +43,50 @@ type Ack struct {
 	Signature      string `json:"signature"`
 }
 
-func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, attachments []string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte, convID string) (*Dispatch, error) {
-	nonce := make([]byte, 12)
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
-	}
+func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, convID string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte) (*Dispatch, error) {
+    nonce := make([]byte, 12)
+    if _, err := rand.Read(nonce); err != nil {
+        return nil, fmt.Errorf("generate nonce: %w", err)
+    }
 
-	cipherBlock, err := aes.NewCipher(sharedKey[:])
-	if err != nil {
-		return nil, fmt.Errorf("create cipher: %w", err)
-	}
+    cipherBlock, err := aes.NewCipher(sharedKey[:])
+    if err != nil {
+        return nil, fmt.Errorf("create cipher: %w", err)
+    }
 
-	gcm, err := cipher.NewGCM(cipherBlock)
-	if err != nil {
-		return nil, fmt.Errorf("create GCM: %w", err)
-	}
+    gcm, err := cipher.NewGCM(cipherBlock)
+    if err != nil {
+        return nil, fmt.Errorf("create GCM: %w", err)
+    }
 
-	encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
-	timestamp := time.Now().Unix()
-	if convID == "" {
-		convID = uuid.New().String()
-	}
+    encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
+    timestamp := time.Now().Unix()
+    if convID == "" {
+        convID = uuid.New().String()
+    }
 
-	disp := &Dispatch{
-		From:            from,
-		To:              to,
-		CC:              cc,
-		Via:              via,
-		Subject:         subject,
-		Body:            base64.StdEncoding.EncodeToString(encrypted),
-		Attachments:     attachments,
-		Timestamp:       timestamp,
-		ConversationID:  convID,
-		Status:          "open",
-		Nonce:           base64.StdEncoding.EncodeToString(nonce),
-		EphemeralPubKey: base64.StdEncoding.EncodeToString(ephemeralPub),
-		Basket:          "OUT",
-	}
+    disp := &Dispatch{
+        UUID:            uuid.New().String(),
+        From:            from,
+        To:              to,
+        CC:              nil, // No CC functionality
+        Subject:         subject,
+        Body:            base64.StdEncoding.EncodeToString(encrypted),
+        Nonce:           base64.StdEncoding.EncodeToString(nonce),
+        Timestamp:       timestamp,
+        ConversationID:  convID,
+        EphemeralPubKey: base64.StdEncoding.EncodeToString(ephemeralPub),
+    }
 
-	hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(append(disp.To, disp.CC...), ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
-	digest := sha256.Sum256([]byte(hashInput))
-	sig, err := Sign(digest[:], privKey)
-	if err != nil {
-		return nil, fmt.Errorf("sign dispatch: %w", err)
-	}
-	disp.Signature = sig
+    hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
+    digest := sha256.Sum256([]byte(hashInput))
+    sig, err := Sign(digest[:], privKey)
+    if err != nil {
+        return nil, fmt.Errorf("sign dispatch: %w", err)
+    }
+    disp.Signature = sig
 
-	return disp, nil
+    return disp, nil
 }
 
 func (d *Dispatch) DecryptBody(sharedKey [32]byte) (string, error) {
