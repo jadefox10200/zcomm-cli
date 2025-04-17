@@ -7,7 +7,7 @@
 cmd/client/client
 cmd/server/server
 cmd/client/zcomm_storage/*
-cmd/client/z*
+cmd/client/z*/
 data
 
 

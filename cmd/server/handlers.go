@@ -1,3 +1,4 @@
+//cmd/server/handlers.go
 package main
 
 import (
