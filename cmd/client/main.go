@@ -780,7 +780,9 @@ func selectDispatchFromBasket(zid, basket string) (core.Dispatch, bool) {
 				if basket == "unanswered" {
 					fmt.Printf("%d. To: %s, Subject: %s\n", i+1, disp.To[0], disp.Subject)
 				} else {
-					fmt.Printf("%d. From: %s, Subject: %s\n", i+1, disp.From, disp.Subject)
+					fmt.Printf("%d. From: %s, Subject: %s", i+1, disp.From, disp.Subject)
+					if disp.IsEnd{fmt.Printf(" - ACK")}
+					fmt.Printf("\n")
 				}
 			}
 		}
