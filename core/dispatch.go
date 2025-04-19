@@ -18,8 +18,8 @@ import (
 
 type PublicKeys struct {
 	ID      string `json:"id"`
-	EdPub   string `json:"ed_pub"`
-	ECDHPub string `json:"ecdh_pub"`
+	EdPub   string `json:"ed_pub"` //for signatures
+	ECDHPub string `json:"ecdh_pub"` //for shared secret encryption
 }
 
 type Dispatch struct {
@@ -37,12 +37,26 @@ type Dispatch struct {
 	IsEnd           bool // New field for end dispatch
 }
 
-type Ack struct {
-	Timestamp      int64  `json:"timestamp"`
-	ConversationID string `json:"conversationID"`
-	From           string `json:"from"`
-	Status         string `json:"status"`
-	Signature      string `json:"signature"`
+//ACK NEEDS TO CHANGE. 
+//IMPLEMENT DeliveryConfirmation to replace ACK
+//IMPLEMENT ReadConfirmation
+//Both are confirmations
+
+type Notification struct {
+	UUID       string `json:"uuid"`
+	DispatchID string `json:"dispatchID"`
+	From       string `json:"from"`
+	To 		   string `json:"to`
+	Type       string `json:"type"` // "delivery" or "read"
+	Timestamp  int64  `json:"timestamp"`
+	Signature  string `json:"signature"`
+	PubKey     string `json:"pubKey"`
+}
+
+type ReceiveRequest struct {
+	ID string `json:"id`
+	TS string `json:"ts"`
+	Sig string `json:"sig"`
 }
 
 func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, convID string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte) (*Dispatch, error) {
@@ -81,15 +95,25 @@ func NewEncryptedDispatch(from string, to, cc, via []string, subject, body strin
 		IsEnd:           false,
     }
 
-    hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
-    digest := sha256.Sum256([]byte(hashInput))
-    sig, err := Sign(digest[:], privKey)
-    if err != nil {
-        return nil, fmt.Errorf("sign dispatch: %w", err)
-    }
-    disp.Signature = sig
+	err = SignDispatch(disp, privKey)
+	if err != nil {
+		return nil, fmt.Errorf("sign dispatch: %w", err)
+	}
+    
 
     return disp, nil
+}
+
+func SignDispatch(disp *Dispatch, privKey ed25519.PrivateKey) (error) {
+	// hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
+    hashInput := GenerateDispatchHash(*disp)
+	digest := sha256.Sum256([]byte(hashInput))
+    sig, err := Sign(digest[:], privKey)
+    if err != nil {
+        return  fmt.Errorf("sign dispatch: %w", err)
+    }
+	disp.Signature = sig
+	return nil
 }
 
 func (d *Dispatch) DecryptBody(sharedKey [32]byte) (string, error) {
@@ -121,6 +145,11 @@ func (d *Dispatch) DecryptBody(sharedKey [32]byte) (string, error) {
 	return string(plaintext), nil
 }
 
+func GenerateDispatchHash(disp Dispatch) string {
+	hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
+	return hashInput
+}
+
 func Sign(data []byte, privKey ed25519.PrivateKey) (string, error) {
 	sig := ed25519.Sign(privKey, data)
 	return base64.StdEncoding.EncodeToString(sig), nil
@@ -133,3 +162,18 @@ func VerifySignature(pubKey, data []byte, signature string) (bool, error) {
 	}
 	return ed25519.Verify(pubKey, data, sig), nil
 }
+
+// //not used?
+// func SignMessageBody(privateKey ed25519.PrivateKey, messageBody []byte) string {
+// 	sig := ed25519.Sign(privateKey, messageBody)
+// 	return base64.StdEncoding.EncodeToString(sig)
+// }
+
+// //not used?
+// func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25519.PublicKey) bool {
+// 	sig, err := base64.StdEncoding.DecodeString(signatureB64)
+// 	if err != nil {
+// 		return false
+// 	}
+// 	return ed25519.Verify(pubKey, messageBody, sig)
+// }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"encoding/base64"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -15,6 +16,9 @@ var (
 	dispatches   = make(map[string][]core.Dispatch)
 	basketsMu    sync.RWMutex
 	baskets      = make(map[string]map[string][]string)
+	//[zid][]Notification
+	pendingNotificationsMu sync.RWMutex
+	pendingNotifications  = make(map[string][]core.Notification)
 )
 
 // StoreDispatch remains unchanged
@@ -280,4 +284,125 @@ type Conversation struct {
 
 type identityStore struct {
 	identity *Identity
+}
+
+// StorePendingConfirmation queues a confirmation for later sending
+func StorePendingNotification(myID string, notif core.Notification) error {
+	path := filepath.Join(myID, "pending_notifications.json")
+	pendingNotificationsMu.Lock()
+	defer pendingNotificationsMu.Unlock()
+
+	if pendingNotifications[myID] == nil {
+		pendingNotifications[myID] = make([]core.Notification, 0)
+	}
+
+	// Avoid duplicates
+	for _, existing := range pendingNotifications[myID] {
+		if existing.UUID == notif.UUID {
+			return nil // Already queued
+		}
+	}
+
+	pendingNotifications[myID] = append(pendingNotifications[myID], notif)
+
+	data, err := json.MarshalIndent(pendingNotifications[myID], "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal pending_notifications: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create pending_notifications dir: %w", err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// LoadPendingConfirmations loads queued notifications
+func LoadPendingNotifications(zid string) ([]core.Notification, error) {
+	path := filepath.Join(zid, "pending_notifications.json")
+	pendingNotificationsMu.RLock()
+	defer pendingNotificationsMu.RUnlock()
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read pending_notifications: %w", err)
+	}
+
+	var notifs []core.Notification
+	if err := json.Unmarshal(data, &notifs); err != nil {
+		return nil, fmt.Errorf("unmarshal pending_notifications: %w", err)
+	}
+
+	return notifs, nil
+}
+
+// RemovePendingConfirmation removes a sent confirmation
+func RemovePendingNotification(zid, notifID, notifType string) error {
+	path := filepath.Join(zid, "pending_notifications.json")
+	pendingNotificationsMu.Lock()
+	defer pendingNotificationsMu.Unlock()
+
+	if pendingNotifications[zid] == nil {
+		return nil
+	}
+
+	var newList []core.Notification
+	for _, notif := range pendingNotifications[zid] {
+		if !(notif.UUID == notifID) {
+			newList = append(newList, notif)
+		}
+	}
+	pendingNotifications[zid] = newList
+
+	data, err := json.MarshalIndent(pendingNotifications[zid], "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal pending_notifications: %w", err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+// StoreReadReceipt saves a ReadConfirmation notification to read_receipts.json.
+//StoreReadReceipt(zid, thisDisp, notif)
+func StoreReadReceipt(zid string, notif core.Notification) error {
+    if zid == "" || notif.Type != "read" {
+        return fmt.Errorf("invalid read receipt data")
+    }
+    pubKey, err := base64.StdEncoding.DecodeString(notif.PubKey)
+    if err != nil {
+        return fmt.Errorf("decode public key: %w", err)
+    }
+    if !verifyNotification(notif, pubKey) {
+        return fmt.Errorf("invalid notification signature")
+    }
+    dir := filepath.Join(zid)
+    filename := filepath.Join(dir, "read_receipts.json")
+    if err := os.MkdirAll(dir, 0700); err != nil {
+        return fmt.Errorf("create directory %s: %w", dir, err)
+    }
+    var receipts []core.Notification
+    data, err := os.ReadFile(filename)
+    if err == nil {
+        if err := json.Unmarshal(data, &receipts); err != nil {
+            return fmt.Errorf("unmarshal read receipts: %w", err)
+        }
+    } else if !os.IsNotExist(err) {
+        return fmt.Errorf("read read_receipts.json: %w", err)
+    }
+    for _, r := range receipts {
+        if r.UUID == notif.UUID {
+            return nil
+        }
+    }
+    receipts = append(receipts, notif)
+    data, err = json.MarshalIndent(receipts, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal read receipts: %w", err)
+    }
+    if err := os.WriteFile(filename, data, 0600); err != nil {
+        return fmt.Errorf("write read_receipts.json: %w", err)
+    }
+    return nil
 }

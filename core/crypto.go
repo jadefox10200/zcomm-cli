@@ -82,19 +82,6 @@ func DecryptAESGCM(key []byte, nonce []byte, ciphertext []byte) ([]byte, error) 
 	return plaintext, nil
 }
 
-func SignMessageBody(privateKey ed25519.PrivateKey, messageBody []byte) string {
-	sig := ed25519.Sign(privateKey, messageBody)
-	return base64.StdEncoding.EncodeToString(sig)
-}
-
-func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25519.PublicKey) bool {
-	sig, err := base64.StdEncoding.DecodeString(signatureB64)
-	if err != nil {
-		return false
-	}
-	return ed25519.Verify(pubKey, messageBody, sig)
-}
-
 func GenerateZID(pub ed25519.PublicKey) string {
 	hash := sha256.Sum256(pub)
 	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(hash[:])
