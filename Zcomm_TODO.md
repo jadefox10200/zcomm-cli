@@ -1,5 +1,21 @@
 # Zcomm ToDo List
 
+Recommended Roadmap
+CC Implementation (1-2 days):
+Add CC to Dispatch, update client/server logic.
+Test one-to-one and CC scenarios.
+Storage Abstraction (2-3 days):
+Introduce Storage interface, refactor to FileStorage.
+Prepare for database without disrupting CC.
+Security Enhancements (3-5 days):
+Add key rotation, stronger validation, audit logging, TLS enforcement.
+Ensure robust encryption and authentication.
+Database Migration (5-10 days, when needed):
+Migrate to SQLite or PostgreSQL when scale or queries demand it.
+Use Storage interface to minimize code changes.
+User Features (ongoing):
+Add aliases, search, group messaging as user needs grow.
+
 ## 🔐 Identity & Key Management
 - [ ] Create a secure `GenerateIdentity()` flow.
 - [ ] Ensure local keyring storage is complete and encrypted.

@@ -37,11 +37,6 @@ type Dispatch struct {
 	IsEnd           bool // New field for end dispatch
 }
 
-//ACK NEEDS TO CHANGE. 
-//IMPLEMENT DeliveryConfirmation to replace ACK
-//IMPLEMENT ReadConfirmation
-//Both are confirmations
-
 type Notification struct {
 	UUID       string `json:"uuid"`
 	DispatchID string `json:"dispatchID"`
@@ -162,18 +157,3 @@ func VerifySignature(pubKey, data []byte, signature string) (bool, error) {
 	}
 	return ed25519.Verify(pubKey, data, sig), nil
 }
-
-// //not used?
-// func SignMessageBody(privateKey ed25519.PrivateKey, messageBody []byte) string {
-// 	sig := ed25519.Sign(privateKey, messageBody)
-// 	return base64.StdEncoding.EncodeToString(sig)
-// }
-
-// //not used?
-// func VerifyMessageSignature(messageBody []byte, signatureB64 string, pubKey ed25519.PublicKey) bool {
-// 	sig, err := base64.StdEncoding.DecodeString(signatureB64)
-// 	if err != nil {
-// 		return false
-// 	}
-// 	return ed25519.Verify(pubKey, messageBody, sig)
-// }

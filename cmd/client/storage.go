@@ -1,3 +1,4 @@
+//cmd/client/storage.go
 package main
 
 import (
@@ -7,6 +8,9 @@ import (
 	"path/filepath"
 	"sync"
 	"encoding/base64"
+	"bufio"
+	"strings"
+	"strconv"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -271,6 +275,236 @@ func LoadConversations(zid string) ([]Conversation, error) {
 	return convs, nil
 }
 
+func archiveConversation(zid, conversationID string) error {
+    convs, err := LoadConversations(zid)
+    if err != nil {
+        return fmt.Errorf("load conversations: %w", err)
+    }
+    var targetConv Conversation
+    var remainingConvs []Conversation
+    for _, conv := range convs {
+        if conv.ConID == conversationID {
+            targetConv = conv
+        } else {
+            remainingConvs = append(remainingConvs, conv)
+        }
+    }
+    if targetConv.ConID == "" {
+        return fmt.Errorf("conversation %s not found", conversationID)
+    }
+    // Write remaining conversations to conversations.json
+    data, err := json.MarshalIndent(remainingConvs, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal conversations: %w", err)
+    }
+    path := filepath.Join(zid, "conversations.json")
+    if err := os.WriteFile(path, data, 0600); err != nil {
+        return fmt.Errorf("write conversations: %w", err)
+    }
+
+   // Append to archive.json
+   archivePath := filepath.Join(zid, "archive.json")
+   var archivedConvs []Conversation
+   data, err = os.ReadFile(archivePath)
+   if err == nil {
+	   if err := json.Unmarshal(data, &archivedConvs); err != nil {
+		   return fmt.Errorf("unmarshal archive: %w", err)
+	   }
+   } else if os.IsNotExist(err) {
+	   // Initialize empty archive.json
+	   archivedConvs = []Conversation{}
+	   data, err = json.MarshalIndent(archivedConvs, "", "  ")
+	   if err != nil {
+		   return fmt.Errorf("marshal empty archive: %w", err)
+	   }
+	   if err := os.WriteFile(archivePath, data, 0600); err != nil {
+		   return fmt.Errorf("create archive: %w", err)
+	   }
+   } else {
+	   return fmt.Errorf("read archive: %w", err)
+   }
+
+    archivedConvs = append(archivedConvs, targetConv)
+    data, err = json.MarshalIndent(archivedConvs, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal archive: %w", err)
+    }
+    if err := os.WriteFile(archivePath, data, 0600); err != nil {
+        return fmt.Errorf("write archive: %w", err)
+    }
+    return nil
+}
+
+func unarchiveConversation(zid, conversationID string) error {
+    archivePath := filepath.Join(zid, "archive.json")
+    var archivedConvs []Conversation
+    data, err := os.ReadFile(archivePath)
+    if err != nil && !os.IsNotExist(err) {
+        return fmt.Errorf("read archive: %w", err)
+    }
+    if err == nil {
+        if err := json.Unmarshal(data, &archivedConvs); err != nil {
+            return fmt.Errorf("unmarshal archive: %w", err)
+        }
+    }
+    var targetConv Conversation
+    var remainingConvs []Conversation
+    for _, conv := range archivedConvs {
+        if conv.ConID == conversationID {
+            targetConv = conv
+        } else {
+            remainingConvs = append(remainingConvs, conv)
+        }
+    }
+    if targetConv.ConID == "" {
+        return fmt.Errorf("conversation %s not found in archive", conversationID)
+    }
+    // Write remaining archived conversations
+    data, err = json.MarshalIndent(remainingConvs, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal archive: %w", err)
+    }
+    if err := os.WriteFile(archivePath, data, 0600); err != nil {
+        return fmt.Errorf("write archive: %w", err)
+    }
+    // Append to conversations.json
+    convs, err := LoadConversations(zid)
+    if err != nil {
+        return fmt.Errorf("load conversations: %w", err)
+    }
+    convs = append(convs, targetConv)
+    data, err = json.MarshalIndent(convs, "", "  ")
+    if err != nil {
+        return fmt.Errorf("marshal conversations: %w", err)
+    }
+    path := filepath.Join(zid, "conversations.json")
+    if err := os.WriteFile(path, data, 0600); err != nil {
+        return fmt.Errorf("write conversations: %w", err)
+    }
+    return nil
+}
+
+// func viewArchivedConversations(zid string) bool {
+//     archivePath := filepath.Join(zid, "archive.json")
+//     var archivedConvs []Conversation
+//     data, err := os.ReadFile(archivePath)
+//     if err != nil && !os.IsNotExist(err) {
+//         fmt.Fprintf(os.Stderr, "Read archive: %v\n", err)
+//         return false
+//     }
+//     if err == nil {
+//         if err := json.Unmarshal(data, &archivedConvs); err != nil {
+//             fmt.Fprintf(os.Stderr, "Unmarshal archive: %v\n", err)
+//             return false
+//         }
+//     }
+//     if len(archivedConvs) == 0 {
+//         fmt.Println("No archived conversations")
+//         return true
+//     }
+//     fmt.Println("Archived Conversations:")
+//     for i, conv := range archivedConvs {
+//         fmt.Printf("%d. %s (Subject: %s, Ended: %v)\n", i+1, conv.ConID, conv.Subject, conv.Ended)
+//     }
+//     fmt.Print("Enter conversation number to unarchive (0 to exit): ")
+//     reader := bufio.NewReader(os.Stdin)
+//     choice, _ := reader.ReadString('\n')
+//     choice = strings.TrimSpace(choice)
+//     num, err := strconv.Atoi(choice)
+//     if err != nil || num < 0 || num > len(archivedConvs) {
+//         fmt.Println("Invalid choice")
+//         return false
+//     }
+//     if num == 0 {
+//         return false
+//     }
+//     conv := archivedConvs[num-1]
+//     if err := unarchiveConversation(zid, conv.ConID); err != nil {
+//         fmt.Fprintf(os.Stderr, "Unarchive conversation: %v\n", err)
+//         return false
+//     }
+//     fmt.Printf("Conversation %s unarchived\n", conv.ConID)
+//     return true
+// }
+
+func viewArchivedConversations(zid string) bool {
+    archivePath := filepath.Join(zid, "archive.json")
+    var archivedConvs []Conversation
+    data, err := os.ReadFile(archivePath)
+    if err != nil && !os.IsNotExist(err) {
+        fmt.Fprintf(os.Stderr, "Read archive: %v\n", err)
+        return false
+    }
+    if err == nil {
+        if err := json.Unmarshal(data, &archivedConvs); err != nil {
+            fmt.Fprintf(os.Stderr, "Unmarshal archive: %v\n", err)
+            return false
+        }
+    }
+    dispatches, err := LoadDispatches(zid)
+    if err != nil {
+        fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
+        return false
+    }
+    if len(archivedConvs) == 0 {
+        fmt.Println("No archived conversations")
+        return true
+    }
+    fmt.Println("Archived Conversations:")
+    for i, conv := range archivedConvs {
+        status := "Active"
+        if conv.Ended {
+            status = "Ended"
+        }
+        // Determine participant
+        participant := "Unknown"
+        if len(conv.Dispatches) > 0 {
+            var latestDisp core.Dispatch
+            maxSeqNo := -1
+            for _, entry := range conv.Dispatches {
+                if entry.SeqNo > maxSeqNo {
+                    maxSeqNo = entry.SeqNo
+                    for _, disp := range dispatches {
+                        if disp.UUID == entry.DispID {
+                            latestDisp = disp
+                            break
+                        }
+                    }
+                }
+            }
+            if latestDisp.UUID != "" {
+                if latestDisp.From == zid {
+                    if len(latestDisp.To) > 0 {
+                        participant = latestDisp.To[0]
+                    }
+                } else {
+                    participant = latestDisp.From
+                }
+            }
+        }
+        fmt.Printf("%d. Subject: %s (With: %s, Status: %s)\n", i+1, conv.Subject, participant, status)
+    }
+    fmt.Print("Enter conversation number to unarchive (0 to exit): ")
+    reader := bufio.NewReader(os.Stdin)
+    choice, _ := reader.ReadString('\n')
+    choice = strings.TrimSpace(choice)
+    num, err := strconv.Atoi(choice)
+    if err != nil || num < 0 || num > len(archivedConvs) {
+        fmt.Println("Invalid choice")
+        return false
+    }
+    if num == 0 {
+        return false
+    }
+    conv := archivedConvs[num-1]
+    if err := unarchiveConversation(zid, conv.ConID); err != nil {
+        fmt.Fprintf(os.Stderr, "Unarchive conversation: %v\n", err)
+        return false
+    }
+    fmt.Printf("Conversation with %s unarchived\n", conv.Subject)
+    return true
+}
+
 // Conversation struct remains unchanged as requested
 type Conversation struct {
 	ConID      string
@@ -404,5 +638,35 @@ func StoreReadReceipt(zid string, notif core.Notification) error {
     if err := os.WriteFile(filename, data, 0600); err != nil {
         return fmt.Errorf("write read_receipts.json: %w", err)
     }
+    return nil
+}
+
+func initBaskets(zid string) error {
+    // Load baskets without holding the lock
+    basketNames := []string{"in", "out", "pending", "unanswered"}
+    basketData := make(map[string][]string)
+    for _, basket := range basketNames {
+        uuids, err := LoadBasket(zid, basket)
+        if err != nil {
+            return fmt.Errorf("load %s basket: %w", basket, err)
+        }
+        if uuids == nil {
+            uuids = make([]string, 0)
+        }
+        basketData[basket] = uuids
+    }
+
+    // Update baskets[zid] under lock
+    basketsMu.Lock()
+    defer basketsMu.Unlock()
+
+    if baskets[zid] == nil {
+        baskets[zid] = make(map[string][]string)
+    }
+    for basket, uuids := range basketData {
+        baskets[zid][basket] = uuids
+    }
+
+    fmt.Fprintf(os.Stderr, "Initialized baskets for %s\n", zid)
     return nil
 }

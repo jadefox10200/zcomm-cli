@@ -1,3 +1,4 @@
+//cmd/server/helperfuncs
 package main 
 
 import (
