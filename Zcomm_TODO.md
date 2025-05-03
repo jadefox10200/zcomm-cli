@@ -1,5 +1,68 @@
 # Zcomm ToDo List
 
+
+# Updated Zcomm Development Roadmap 3 May 2025:
+
+This roadmap prioritizes features for Zcomm, aligning with its mission as a secure, action-oriented messaging platform. The email gateway is excluded due to complexity and security risks. Rotating keys and device sync are added for security and usability.
+
+## Phase 1: Security and Core Usability (0-3 Months)
+- **Login System for Key Security**
+  - Encrypt private keys with password-derived keys (Argon2).
+  - Add CLI login prompt, secure identity files.
+  - *Why*: Protects keys, foundational for trust.
+- **Rotating Keys**
+  - Implement periodic ECDH and Ed25519 key rotation.
+  - Update server public keys, re-encrypt local storage, add CLI commands.
+  - *Why*: Enhances forward secrecy, critical for security.
+- **Contacts and Aliases**
+  - Implement contact database and alias mapping.
+  - Add CLI commands for contact management, sync public keys.
+  - *Why*: Simplifies addressing, enhances usability.
+- **Task Creation Based on Dispatches**
+  - Define task struct, update SQLite schema.
+  - Add CLI commands for task creation, integrate with PENDING basket.
+  - *Why*: Supports action-oriented workflows.
+
+## Phase 2: Usability Enhancements (3-6 Months)
+- **GUI Front-End**
+  - Build web-based GUI (React) or Electron app.
+  - Integrate with HTTP server, implement basket views.
+  - *Why*: Improves accessibility, enables formal display.
+- **Formal Letter Display for Dispatches**
+  - Create HTML/CSS templates with headers and signatures.
+  - Integrate into GUI for professional presentation.
+  - *Why*: Enhances professionalism.
+
+## Phase 3: Functional Enhancements (6-9 Months)
+- **CC for Dispatches**
+  - Extend `To` field for CC recipients, update encryption.
+  - Add CLI/GUI support for CC.
+  - *Why*: Supports transparency.
+- **File Attachments**
+  - Extend dispatch struct for encrypted files.
+  - Add CLI/GUI upload/download, enforce size limits.
+  - *Why*: Enables document sharing.
+- **Device Sync**
+  - Implement sync protocol for identity, dispatches, baskets, tasks.
+  - Add conflict resolution, secure key storage, GUI integration.
+  - *Why*: Enables multi-device support.
+
+## Phase 4: Advanced Features (9-12 Months)
+- **Memos for Group Communication**
+  - Define memo struct, implement group key management.
+  - Restrict dispatches to one primary recipient, update UI.
+  - *Why*: Enables group announcements.
+- **Forwarding Dispatches**
+  - Implement dispatch referencing, re-encrypt forwarded content.
+  - Add CLI/GUI forwarding options, preserve signatures.
+  - *Why*: Supports collaboration.
+
+## Phase 5: Experimental Features (12+ Months)
+- **VIA Routing with Rejection**
+  - Add VIA field, implement routing and rejection logic.
+  - Create REJECTED basket, update CLI/GUI.
+  - *Why*: Supports niche workflows.
+-----------------------------------------------------------------------
 Recommended Roadmap
 
 Updated Roadmap:
