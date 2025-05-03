@@ -1,36 +1,36 @@
-//cmd/client/signatures.go
-package main 
+// cmd/client/signatures.go
+package main
 
 import (
-	"fmt"
-	"time"
-	"encoding/base64"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
+	"time"
 
 	"github.com/jadefox10200/zcomm/core"
 )
 
 func signNotification(identity *Identity, notif core.Notification) (string, error) {
-    data := []byte(fmt.Sprintf("%s%d", notif.UUID, notif.Timestamp))
-    privKey, err := base64.StdEncoding.DecodeString(identity.EdPriv)
-    if err != nil {
-        return "", fmt.Errorf("decode private key: %w", err)
-    }
-    if len(privKey) != ed25519.PrivateKeySize {
-        return "", fmt.Errorf("invalid private key length: got %d, want %d", len(privKey), ed25519.PrivateKeySize)
-    }
-    signature := ed25519.Sign(ed25519.PrivateKey(privKey), data)
-    return base64.StdEncoding.EncodeToString(signature), nil
+	data := []byte(fmt.Sprintf("%s%d", notif.UUID, notif.Timestamp))
+	privKey, err := base64.StdEncoding.DecodeString(identity.EdPriv)
+	if err != nil {
+		return "", fmt.Errorf("decode private key: %w", err)
+	}
+	if len(privKey) != ed25519.PrivateKeySize {
+		return "", fmt.Errorf("invalid private key length: got %d, want %d", len(privKey), ed25519.PrivateKeySize)
+	}
+	signature := ed25519.Sign(ed25519.PrivateKey(privKey), data)
+	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
 func verifyNotification(notif core.Notification, publicKey []byte) bool {
-    data := []byte(fmt.Sprintf("%s%d", notif.UUID, notif.Timestamp))
-    signature, err := base64.StdEncoding.DecodeString(notif.Signature)
-    if err != nil {
-        return false
-    }
-    return ed25519.Verify(publicKey, data, signature)
+	data := []byte(fmt.Sprintf("%s%d", notif.UUID, notif.Timestamp))
+	signature, err := base64.StdEncoding.DecodeString(notif.Signature)
+	if err != nil {
+		return false
+	}
+	return ed25519.Verify(publicKey, data, signature)
 }
 
 // verifyDispatch verifies the signature of a received dispatch.
@@ -50,8 +50,7 @@ func verifyDispatch(disp core.Dispatch, keys core.PublicKeys) (bool, error) {
 	return true, nil
 }
 
-
-//createReqSignature generates a signature for a request.
+// createReqSignature generates a signature for a request.
 func createReqSignature(zid string, edPriv ed25519.PrivateKey) (string, string, error) {
 	ts := fmt.Sprintf("%d", time.Now().Unix())
 	sigData := []byte(zid + ts)

@@ -1,6 +1,17 @@
 # Zcomm ToDo List
 
 Recommended Roadmap
+
+Updated Roadmap:
+Database Implementation (5-7 days).
+CC Implementation (2-3 days).
+GUI Front-End (7-10 days, detailed below).
+Security Enhancements (3-5 days).
+User-Friendly Features (3-5 days).
+Testing and Polish (5-7 days).
+Total: 25-37 days (4-5 weeks).
+
+---
 CC Implementation (1-2 days):
 Add CC to Dispatch, update client/server logic.
 Test one-to-one and CC scenarios.

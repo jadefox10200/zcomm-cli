@@ -1,4 +1,4 @@
-//core/dispatch.go
+// core/dispatch.go
 package core
 
 import (
@@ -18,7 +18,7 @@ import (
 
 type PublicKeys struct {
 	ID      string `json:"id"`
-	EdPub   string `json:"ed_pub"` //for signatures
+	EdPub   string `json:"ed_pub"`   //for signatures
 	ECDHPub string `json:"ecdh_pub"` //for shared secret encryption
 }
 
@@ -29,19 +29,20 @@ type Dispatch struct {
 	CC              []string
 	Subject         string
 	Body            string
-	Nonce           string
+	LocalNonce      string // Added for local encryption nonce
+	Nonce           string // Existing transmission nonce
 	Timestamp       int64
 	ConversationID  string
 	Signature       string
 	EphemeralPubKey string
-	IsEnd           bool // New field for end dispatch
+	IsEnd           bool
 }
 
 type Notification struct {
 	UUID       string `json:"uuid"`
 	DispatchID string `json:"dispatchID"`
 	From       string `json:"from"`
-	To 		   string `json:"to`
+	To         string `json:"to"`
 	Type       string `json:"type"` // "delivery" or "read"
 	Timestamp  int64  `json:"timestamp"`
 	Signature  string `json:"signature"`
@@ -49,64 +50,63 @@ type Notification struct {
 }
 
 type ReceiveRequest struct {
-	ID string `json:"id`
-	TS string `json:"ts"`
+	ID  string `json:"id"`
+	TS  string `json:"ts"`
 	Sig string `json:"sig"`
 }
 
 func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, convID string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte) (*Dispatch, error) {
-    nonce := make([]byte, 12)
-    if _, err := rand.Read(nonce); err != nil {
-        return nil, fmt.Errorf("generate nonce: %w", err)
-    }
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
 
-    cipherBlock, err := aes.NewCipher(sharedKey[:])
-    if err != nil {
-        return nil, fmt.Errorf("create cipher: %w", err)
-    }
+	cipherBlock, err := aes.NewCipher(sharedKey[:])
+	if err != nil {
+		return nil, fmt.Errorf("create cipher: %w", err)
+	}
 
-    gcm, err := cipher.NewGCM(cipherBlock)
-    if err != nil {
-        return nil, fmt.Errorf("create GCM: %w", err)
-    }
+	gcm, err := cipher.NewGCM(cipherBlock)
+	if err != nil {
+		return nil, fmt.Errorf("create GCM: %w", err)
+	}
 
-    encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
-    timestamp := time.Now().Unix()
-    if convID == "" {
-        convID = uuid.New().String()
-    }
+	encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
+	timestamp := time.Now().Unix()
+	if convID == "" {
+		convID = uuid.New().String()
+	}
 
-    disp := &Dispatch{
-        UUID:            uuid.New().String(),
-        From:            from,
-        To:              to,
-        CC:              nil, // No CC functionality
-        Subject:         subject,
-        Body:            base64.StdEncoding.EncodeToString(encrypted),
-        Nonce:           base64.StdEncoding.EncodeToString(nonce),
-        Timestamp:       timestamp,
-        ConversationID:  convID,
-        EphemeralPubKey: base64.StdEncoding.EncodeToString(ephemeralPub),
+	disp := &Dispatch{
+		UUID:            uuid.New().String(),
+		From:            from,
+		To:              to,
+		CC:              nil, // No CC functionality
+		Subject:         subject,
+		Body:            base64.StdEncoding.EncodeToString(encrypted),
+		Nonce:           base64.StdEncoding.EncodeToString(nonce),
+		Timestamp:       timestamp,
+		ConversationID:  convID,
+		EphemeralPubKey: base64.StdEncoding.EncodeToString(ephemeralPub),
 		IsEnd:           false,
-    }
+	}
 
 	err = SignDispatch(disp, privKey)
 	if err != nil {
 		return nil, fmt.Errorf("sign dispatch: %w", err)
 	}
-    
 
-    return disp, nil
+	return disp, nil
 }
 
-func SignDispatch(disp *Dispatch, privKey ed25519.PrivateKey) (error) {
+func SignDispatch(disp *Dispatch, privKey ed25519.PrivateKey) error {
 	// hashInput := fmt.Sprintf("%s%s%s%s%s%d%s%s", disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.Nonce, disp.Timestamp, disp.ConversationID, disp.EphemeralPubKey)
-    hashInput := GenerateDispatchHash(*disp)
+	hashInput := GenerateDispatchHash(*disp)
 	digest := sha256.Sum256([]byte(hashInput))
-    sig, err := Sign(digest[:], privKey)
-    if err != nil {
-        return  fmt.Errorf("sign dispatch: %w", err)
-    }
+	sig, err := Sign(digest[:], privKey)
+	if err != nil {
+		return fmt.Errorf("sign dispatch: %w", err)
+	}
 	disp.Signature = sig
 	return nil
 }

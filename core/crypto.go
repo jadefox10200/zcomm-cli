@@ -1,4 +1,4 @@
-//core/crypto.go
+// core/crypto.go
 package core
 
 import (
@@ -7,8 +7,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/base32"
+	"encoding/base64"
 
 	"golang.org/x/crypto/curve25519"
 )
@@ -102,4 +102,10 @@ func GenerateZID(pub ed25519.PublicKey) string {
 
 func EncodeKey(key []byte) string {
 	return base64.StdEncoding.EncodeToString(key)
+}
+
+// DeriveLocalEncryptionKey derives a symmetric key for local encryption from the ECDH private key.
+func DeriveLocalEncryptionKey(ecdhPriv [32]byte) [32]byte {
+	hash := sha256.Sum256(ecdhPriv[:])
+	return hash
 }
