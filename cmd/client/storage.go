@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -105,7 +106,6 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 		CREATE TABLE IF NOT EXISTS PendingNotifications (
 			uuid TEXT PRIMARY KEY,
 			type TEXT NOT NULL,
-			pub_key TEXT NOT NULL,
 			signature TEXT NOT NULL,
 			dispatch_id TEXT NOT NULL,
 			timestamp INTEGER NOT NULL
@@ -113,7 +113,6 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 		CREATE TABLE IF NOT EXISTS ReadReceipts (
 			uuid TEXT PRIMARY KEY,
 			dispatch_id TEXT NOT NULL,
-			pub_key TEXT NOT NULL,
 			signature TEXT NOT NULL,
 			timestamp INTEGER NOT NULL
 		);
@@ -1139,9 +1138,9 @@ type notificationRow struct {
 
 func (s *SQLiteStorage) StorePendingNotification(zid string, notif core.Notification) error {
 	_, err := s.db.Exec(`
-		INSERT OR IGNORE INTO PendingNotifications (uuid, type, pub_key, signature, dispatch_id, timestamp)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`, notif.UUID, notif.Type, notif.PubKey, notif.Signature, notif.DispatchID, notif.Timestamp)
+		INSERT OR IGNORE INTO PendingNotifications (uuid, type, signature, dispatch_id, timestamp)
+		VALUES (?, ?, ?, ?, ?)
+	`, notif.UUID, notif.Type, notif.Signature, notif.DispatchID, notif.Timestamp)
 	if err != nil {
 		return fmt.Errorf("insert pending notification: %w", err)
 	}
@@ -1151,7 +1150,7 @@ func (s *SQLiteStorage) StorePendingNotification(zid string, notif core.Notifica
 func (s *SQLiteStorage) LoadPendingNotifications(zid string) ([]core.Notification, error) {
 	var rows []notificationRow
 	err := s.db.Select(&rows, `
-		SELECT uuid, type, pub_key, signature, dispatch_id, timestamp
+		SELECT uuid, type, signature, dispatch_id, timestamp
 		FROM PendingNotifications
 	`)
 	if err != nil {
@@ -1166,7 +1165,6 @@ func (s *SQLiteStorage) LoadPendingNotifications(zid string) ([]core.Notificatio
 			To:         "",
 			Type:       row.Type,
 			Timestamp:  row.Timestamp,
-			PubKey:     row.PubKey,
 			Signature:  row.Signature,
 		}
 	}
@@ -1184,21 +1182,32 @@ func (s *SQLiteStorage) RemovePendingNotification(zid, notifID, notifType string
 	return nil
 }
 
+// StoreReadReceipt stores a read receipt in the database.
 func (s *SQLiteStorage) StoreReadReceipt(zid string, notif core.Notification) error {
 	if zid == "" || notif.Type != "read" {
 		return fmt.Errorf("invalid read receipt data")
 	}
-	pubKey, err := base64.StdEncoding.DecodeString(notif.PubKey)
+	keys, err := fetchPublicKeys(notif.From)
 	if err != nil {
-		return fmt.Errorf("decode public key: %w", err)
+		return fmt.Errorf("fetch public keys for %s: %w", notif.From, err)
 	}
-	if !verifyNotification(notif, pubKey) {
-		return fmt.Errorf("invalid notification signature")
+	pubKey, err := base64.StdEncoding.DecodeString(keys.EdPub)
+	if err != nil {
+		return fmt.Errorf("decode public key for %s: %w", notif.From, err)
+	}
+
+	// Log notification for verification
+	notifJSON, _ := json.MarshalIndent(notif, "", "  ")
+	fmt.Printf("Verifying read receipt: %s\n", notifJSON)
+
+	valid, err := core.VerifyNotification(notif, pubKey)
+	if err != nil || !valid {
+		return fmt.Errorf("invalid notification signature: %w", err)
 	}
 	_, err = s.db.Exec(`
-		INSERT OR IGNORE INTO ReadReceipts (uuid, dispatch_id, pub_key, signature, timestamp)
-		VALUES (?, ?, ?, ?, ?)
-	`, notif.UUID, notif.DispatchID, notif.PubKey, notif.Signature, notif.Timestamp)
+		INSERT OR IGNORE INTO ReadReceipts (uuid, dispatch_id, signature, timestamp)
+		VALUES (?, ?, ?, ?)
+	`, notif.UUID, notif.DispatchID, notif.Signature, notif.Timestamp)
 	if err != nil {
 		return fmt.Errorf("insert read receipt: %w", err)
 	}

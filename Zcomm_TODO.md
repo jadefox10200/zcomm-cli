@@ -63,6 +63,51 @@ This roadmap prioritizes features for Zcomm, aligning with its mission as a secu
   - Create REJECTED basket, update CLI/GUI.
   - *Why*: Supports niche workflows.
 -----------------------------------------------------------------------
+
+4. Server-Side ZID-to-Account Mapping
+Concept: Since Zcomm already registers ZIDs with the server (POST /identity), extend this to enforce one account per user by linking all ZIDs to a single account ID. The server rejects new account creation if the user’s ZIDs are already associated with another account.
+
+Implementation:
+
+Account ID:
+Generate a unique account ID (e.g., UUID) during account creation and store it in data/accounts/account_<username>.json.
+Send the account ID with ZID registration requests in GenerateAndStoreNewIdentity.
+Server-Side Logic:
+Modify the /identity endpoint to include an account_id field:
+go
+
+type serverIdentity struct {
+    ID          string `json:"id"`
+    AccountID   string `json:"account_id"`
+    VerifyKey   string `json:"verify_key"`
+    ExchangeKey string `json:"exchange_key"`
+}
+Store a mapping of ZIDs to account IDs in the server database:
+sql
+
+CREATE TABLE account_zids (zid TEXT PRIMARY KEY, account_id TEXT);
+During account creation, check if any ZIDs are already linked to another account ID.
+Enforcement:
+If a user tries to create a new account and registers a ZID already tied to another account ID, reject the request.
+Pros:
+
+Leverages existing ZID registration infrastructure.
+Transparent to users (no additional input like email).
+Scalable for identity matching in future phases.
+Cons:
+
+Requires server-side database changes.
+Users could create multiple accounts before registering ZIDs, unless account creation is also server-side.
+Needs careful handling of account recovery (e.g., merging ZIDs).
+Zcomm Considerations:
+
+Ideal for Zcomm, as it builds on the existing /identity endpoint.
+Store account IDs in identity_<zid>.json for consistency.
+Add a server-side /account endpoint to register the account ID before ZID creation.
+
+-----------------------------------------------------------------------
+
+
 Recommended Roadmap
 
 Updated Roadmap:

@@ -1,4 +1,4 @@
-//cmd/server/handlers.go
+// cmd/server/handlers.go
 package main
 
 import (
@@ -34,7 +34,7 @@ func HandleIdentity(identityStore *IdentityStore, keyStore *KeyStore) http.Handl
 	}
 }
 
-//this is when the client is sending us a dispatch:
+// this is when the client is sending us a dispatch:
 func (in *Inbox) HandleSend(w http.ResponseWriter, r *http.Request) {
 	var disp core.Dispatch
 	if err := json.NewDecoder(r.Body).Decode(&disp); err != nil {
@@ -51,7 +51,7 @@ func (in *Inbox) HandleSend(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("recipient %s not found", to), http.StatusBadRequest)
 			return
 		}
-		//this an in-memory inbox so we should do something to make sure we don't lose something.  
+		//this an in-memory inbox so we should do something to make sure we don't lose something.
 		in.inbox[to] = append(in.inbox[to], disp)
 	}
 	fmt.Printf("Stored dispatch for %s from %s: %s\n", strings.Join(recipients, ","), disp.From, disp.Subject)
@@ -59,13 +59,13 @@ func (in *Inbox) HandleSend(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-//client is requesting their dispatches
+// client is requesting their dispatches
 func (in *Inbox) HandleReceive(w http.ResponseWriter, r *http.Request) {
-	
+
 	zid, err := in.VerifyReceiveReq(r)
 	if err != nil {
 		http.Error(w, "failed to verify you", http.StatusBadRequest)
-		return 
+		return
 	}
 
 	in.mu.Lock()
@@ -90,14 +90,14 @@ func (in *Inbox) HandleReceive(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-//client is requesting their notifications
+// client is requesting their notifications
 func (in *Inbox) HandleReqNotifs(w http.ResponseWriter, r *http.Request) {
-	
+
 	//verify the client is who they say they are:
 	zid, err := in.VerifyReceiveReq(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return 
+		return
 	}
 
 	in.mu.Lock()
@@ -122,7 +122,7 @@ func (in *Inbox) HandleReqNotifs(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-//client is sending us a confirmation Notification of either delivered or read.
+// client is sending us a confirmation Notification of either delivered or read.
 func (in *Inbox) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 	var req core.Notification
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -130,10 +130,10 @@ func (in *Inbox) HandleConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	keys, found :=in.keyring.Get(req.From)
+	keys, found := in.keyring.Get(req.From)
 	if !found {
 		http.Error(w, "couldn't find your keys", http.StatusBadRequest)
-		return 
+		return
 	}
 	//verify this is a valid confirmation request
 	err := verifyNotification(req, keys)

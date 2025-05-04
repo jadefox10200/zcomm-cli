@@ -1,3 +1,4 @@
+// cmd/client/main.go
 package main
 
 import (
@@ -7,7 +8,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,15 +18,208 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jadefox10200/zcomm/core"
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/term"
 )
 
 const serverURL = "http://localhost:8080"
 
-// storage is the global Storage interface for database access
 var storage Storage
 
-// fetchPublicKeys retrieves public keys for a given ZID from the server.
+type Account struct {
+	Username     string   `json:"username"`
+	PasswordHash string   `json:"password_hash"`
+	ZIDs         []string `json:"zids"`
+}
+
+func loadAccount(username string) (*Account, error) {
+	path := filepath.Join("data", "accounts", fmt.Sprintf("account_%s.json", username))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read account file: %w", err)
+	}
+	var account Account
+	if err := json.Unmarshal(data, &account); err != nil {
+		return nil, fmt.Errorf("unmarshal account: %w", err)
+	}
+	return &account, nil
+}
+
+func saveAccount(account *Account) error {
+	path := filepath.Join("data", "accounts", fmt.Sprintf("account_%s.json", account.Username))
+	data, err := json.MarshalIndent(account, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal account: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create accounts dir: %w", err)
+	}
+	return os.WriteFile(path, data, 0600)
+}
+
+func createAccount(username, password string) error {
+	path := filepath.Join("data", "accounts", fmt.Sprintf("account_%s.json", username))
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		return fmt.Errorf("account already exists")
+	}
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return fmt.Errorf("generate salt: %w", err)
+	}
+	hash := argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32)
+	hashStr := fmt.Sprintf("$argon2id$v=19$m=65536,t=3,p=4$%s$%s",
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(hash))
+
+	account := &Account{
+		Username:     username,
+		PasswordHash: hashStr,
+		ZIDs:         []string{},
+	}
+	return saveAccount(account)
+}
+
+func parsePasswordHash(hashStr string) ([]byte, []byte, error) {
+	if hashStr == "" {
+		return nil, nil, fmt.Errorf("empty hash string")
+	}
+
+	parts := strings.Split(hashStr, "$")
+	if len(parts) != 6 {
+		return nil, nil, fmt.Errorf("invalid hash format: expected 6 parts, got %d", len(parts))
+	}
+	if parts[1] != "argon2id" {
+		return nil, nil, fmt.Errorf("invalid algorithm: expected argon2id, got %s", parts[1])
+	}
+	if parts[2] != "v=19" {
+		return nil, nil, fmt.Errorf("invalid version: expected v=19, got %s", parts[2])
+	}
+
+	params := strings.Split(parts[3], ",")
+	if len(params) != 3 {
+		return nil, nil, fmt.Errorf("invalid parameters: expected 3, got %d", len(params))
+	}
+	for _, param := range params {
+		if !strings.HasPrefix(param, "m=") && !strings.HasPrefix(param, "t=") && !strings.HasPrefix(param, "p=") {
+			return nil, nil, fmt.Errorf("invalid parameter format: %s", param)
+		}
+	}
+
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode salt: %w", err)
+	}
+	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil {
+		return nil, nil, fmt.Errorf("decode hash: %w", err)
+	}
+
+	return salt, hash, nil
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func promptLogin() (string, ed25519.PrivateKey, [32]byte, []byte, error) {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Username: ")
+	username, _ := reader.ReadString('\n')
+	username = strings.TrimSpace(username)
+
+	fmt.Print("Password: ")
+	passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Println()
+	if err != nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("read password: %w", err)
+	}
+	password := string(passwordBytes)
+
+	account, err := loadAccount(username)
+	if err != nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("load account: %w", err)
+	}
+
+	salt, storedHash, err := parsePasswordHash(account.PasswordHash)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Parse password hash failed: %v\n", err)
+		return "", nil, [32]byte{}, nil, fmt.Errorf("parse hash: %w", err)
+	}
+	derivedHash := argon2.IDKey([]byte(password), salt, 3, 64*1024, 4, 32)
+	if !bytesEqual(derivedHash, storedHash) {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("invalid password")
+	}
+
+	// Use a fixed-length salt for encryption key derivation
+	fixedSalt := make([]byte, 16)
+	copy(fixedSalt, []byte(username+"zcomm_salt"))
+	encryptionKey := argon2.IDKey([]byte(password), fixedSalt, 3, 64*1024, 4, 32)
+	if len(encryptionKey) != 32 {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("invalid encryption key size: got %d, expected 32", len(encryptionKey))
+	}
+
+	fmt.Println("Available ZIDs:")
+	for i, zid := range account.ZIDs {
+		fmt.Printf("%d. %s\n", i+1, zid)
+	}
+	fmt.Print("Select ZID number (0 to create new ZID): ")
+	var choice int
+	fmt.Scanln(&choice)
+
+	var zid string
+	if choice == 0 {
+		identity, err := GenerateAndStoreNewIdentity(encryptionKey)
+		if err != nil {
+			return "", nil, [32]byte{}, nil, fmt.Errorf("create ZID: %w", err)
+		}
+		zid = identity.ID
+		for _, existingZID := range account.ZIDs {
+			if existingZID == zid {
+				return "", nil, [32]byte{}, nil, fmt.Errorf("generated ZID %s already exists in account", zid)
+			}
+		}
+		account.ZIDs = append(account.ZIDs, zid)
+		if err := saveAccount(account); err != nil {
+			return "", nil, [32]byte{}, nil, fmt.Errorf("save account: %w", err)
+		}
+		fmt.Printf("Created new ZID: %s\n", zid)
+	} else if choice < 1 || choice > len(account.ZIDs) {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("invalid ZID selection")
+	} else {
+		zid = account.ZIDs[choice-1]
+	}
+
+	storage, err = NewSQLiteStorage(zid)
+	if err != nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("initialize storage for ZID %s: %w", zid, err)
+	}
+
+	is, err := LoadIdentity(getIdentityPath(zid))
+	if err != nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("load identity: %w", err)
+	}
+	if is.identity == nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("identity for %s not found", zid)
+	}
+	edPriv, ecdhPriv, err := DecryptIdentity(is.identity, encryptionKey)
+	if err != nil {
+		return "", nil, [32]byte{}, nil, fmt.Errorf("decrypt identity: %w", err)
+	}
+	fmt.Printf("Ed25519 private key length after decryption: %d\n", len(edPriv))
+
+	return zid, edPriv, ecdhPriv, encryptionKey, nil
+}
+
 func fetchPublicKeys(zid string) (core.PublicKeys, error) {
 	resp, err := http.Get(fmt.Sprintf("%s/pubkey?id=%s", serverURL, zid))
 	if err != nil {
@@ -46,7 +239,6 @@ func fetchPublicKeys(zid string) (core.PublicKeys, error) {
 	return keys, nil
 }
 
-// fetchNotifications sends a POST request to retrieve notifications from the server.
 func fetchNotifications(zid, ts, sig string) ([]core.Notification, int, error) {
 	reqData := core.ReceiveRequest{ID: zid, TS: ts, Sig: sig}
 	data, err := json.Marshal(reqData)
@@ -82,7 +274,6 @@ func fetchNotifications(zid, ts, sig string) ([]core.Notification, int, error) {
 	return notifs, resp.StatusCode, nil
 }
 
-// fetchDispatches sends a POST request to retrieve dispatches from the server.
 func fetchDispatches(zid, ts, sig string) ([]core.Dispatch, int, error) {
 	reqData := core.ReceiveRequest{ID: zid, TS: ts, Sig: sig}
 	data, err := json.Marshal(reqData)
@@ -118,7 +309,6 @@ func fetchDispatches(zid, ts, sig string) ([]core.Dispatch, int, error) {
 	return disps, resp.StatusCode, nil
 }
 
-// decryptDispatch decrypts the body of a dispatch using the shared key.
 func decryptDispatch(disp *core.Dispatch, ecdhPriv [32]byte) error {
 	ephemeralPub, err := base64.StdEncoding.DecodeString(disp.EphemeralPubKey)
 	if err != nil {
@@ -140,12 +330,9 @@ func decryptDispatch(disp *core.Dispatch, ecdhPriv [32]byte) error {
 	return nil
 }
 
-// storeDispatchAndUpdateConversation stores a dispatch with local encryption and updates conversation state.
 func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatches []core.Dispatch, storage Storage, ecdhPriv [32]byte) error {
-	// Derive local encryption key
 	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
 
-	// Decrypt received dispatch if encrypted
 	plaintext := disp.Body
 	if disp.Nonce != "" && disp.EphemeralPubKey != "" {
 		if err := decryptDispatch(&disp, ecdhPriv); err != nil {
@@ -154,7 +341,6 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 		plaintext = disp.Body
 	}
 
-	// Encrypt for local storage
 	localCiphertext, localNonce, err := core.EncryptAESGCM(localKey[:], []byte(plaintext))
 	if err != nil {
 		return fmt.Errorf("encrypt for local storage: %w", err)
@@ -162,18 +348,15 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 	disp.Body = base64.StdEncoding.EncodeToString(localCiphertext)
 	disp.LocalNonce = base64.StdEncoding.EncodeToString(localNonce)
 
-	// Store dispatch in SQLite
 	if err := storage.StoreDispatch(zid, disp); err != nil {
 		return fmt.Errorf("store dispatch: %w", err)
 	}
 
-	// Update conversation state
 	convs, err := storage.LoadConversations(zid)
 	if err != nil {
 		return fmt.Errorf("load conversations: %w", err)
 	}
 
-	// Determine sequence number
 	seqNo := 1
 	for _, conv := range convs {
 		if conv.ConID == disp.ConversationID {
@@ -186,17 +369,14 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 		}
 	}
 
-	// Store conversation
 	if err := storage.StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo, disp.Subject); err != nil {
 		return fmt.Errorf("store conversation: %w", err)
 	}
 
-	// Assign to inbox basket
 	if err := storage.StoreBasket(zid, "inbox", disp.UUID); err != nil {
 		return fmt.Errorf("store in inbox: %w", err)
 	}
 
-	// Handle end-of-conversation (archive)
 	if disp.IsEnd {
 		if err := storage.ArchiveConversation(zid, disp.ConversationID, true); err != nil {
 			return fmt.Errorf("archive conversation: %w", err)
@@ -204,7 +384,6 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 		fmt.Printf("Conversation %s archived due to end signal from %s\n", disp.ConversationID, disp.From)
 	}
 
-	// Update unanswered basket
 	unanswered, err := storage.LoadBasket(zid, "unanswered")
 	if err != nil {
 		return fmt.Errorf("load unanswered: %w", err)
@@ -223,7 +402,7 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 	return nil
 }
 
-func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) {
+func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte) {
 	backoff := 5 * time.Second
 	maxBackoff := 60 * time.Second
 
@@ -279,12 +458,12 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) 
 				continue
 			}
 
-			// Store dispatch with local encryption
 			if err := storeDispatchAndUpdateConversation(zid, disp, localDispatches, storage, ecdhPriv); err != nil {
 				fmt.Fprintf(os.Stderr, "Store dispatch from %s: %v\n", disp.From, err)
 				continue
 			}
-			handleSendDelivery(disp, zid)
+			fmt.Println("Sending delivery notification")
+			handleSendDelivery(disp, zid, edPriv, encryptionKey)
 		}
 
 		backoff = 5 * time.Second
@@ -292,69 +471,169 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) 
 	}
 }
 
-func handleSendDelivery(disp core.Dispatch, zid string) {
+// handleSendDelivery sends a delivery notification for a dispatch.
+func handleSendDelivery(disp core.Dispatch, zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) {
+	fmt.Printf("Ed25519 private key length before signing notification: %d\n", len(edPriv))
 	identity, err := LoadIdentity(getIdentityPath(zid))
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to load identity: %v\n", err)
 		return
 	}
 	if identity.identity == nil {
+		fmt.Fprintf(os.Stderr, "Identity not initialized for %s\n", zid)
 		return
 	}
-	deliveryReceipt := core.Notification{
+
+	deliveryReceipt := &core.Notification{
 		UUID:       uuid.New().String(),
 		DispatchID: disp.UUID,
 		From:       zid,
 		To:         disp.From,
 		Type:       "delivery",
 		Timestamp:  time.Now().Unix(),
-		PubKey:     identity.identity.EdPub,
 	}
-	deliveryReceipt.Signature, err = signNotification(identity.identity, deliveryReceipt)
+
+	// Log notification before signing
+	notifJSON, _ := json.MarshalIndent(deliveryReceipt, "", "  ")
+	fmt.Printf("Notification before signing: %s\n", notifJSON)
+
+	err = core.SignNotification(deliveryReceipt, edPriv)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Sign notification: %v\n", err)
 		return
 	}
+
+	// Log notification after signing
+	notifJSON, _ = json.MarshalIndent(deliveryReceipt, "", "  ")
+	fmt.Printf("Notification after signing: %s\n", notifJSON)
+
 	data, err := json.Marshal(deliveryReceipt)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Marshal delivery receipt: %v\n", err)
 		return
 	}
-	resp, err := http.DefaultClient.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
+
+	resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
 	if err != nil {
-		storage.StorePendingNotification(zid, deliveryReceipt)
+		if err := storage.StorePendingNotification(zid, *deliveryReceipt); err != nil {
+			fmt.Fprintf(os.Stderr, "Store pending notification: %v\n", err)
+		} else {
+			fmt.Println("Stored delivery notification for later due to network error")
+		}
 		return
 	}
 	defer resp.Body.Close()
+
+	// Log response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Read response body: %v\n", err)
+	} else if resp.StatusCode != http.StatusOK {
+		fmt.Printf("Server response body: %s\n", body)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		storage.StorePendingNotification(zid, deliveryReceipt)
+		if err := storage.StorePendingNotification(zid, *deliveryReceipt); err != nil {
+			fmt.Fprintf(os.Stderr, "Store pending notification: %v\n", err)
+		} else {
+			fmt.Printf("Stored delivery notification for later: server returned %d\n", resp.StatusCode)
+		}
 		return
 	}
+	fmt.Println("Delivery notification sent successfully")
 }
 
-// updateDeliveredDispatch updates the basket for a confirmed dispatch.
-func updateDeliveredDispatch(zid, dispID string, disp core.Dispatch) error {
-	if disp.IsEnd {
-		if err := storage.RemoveMessage(zid, "out", dispID); err != nil {
-			return fmt.Errorf("remove from out: %w", err)
+// handleSendRead sends a read notification for a dispatch.
+func handleSendRead(disp core.Dispatch, zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) {
+	fmt.Printf("Ed25519 private key length before signing read receipt: %d\n", len(edPriv))
+	identity, err := LoadIdentity(getIdentityPath(zid))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Couldn't load identity for read receipt: %v\n", err)
+		return
+	}
+	if identity.identity == nil {
+		fmt.Fprintf(os.Stderr, "Identity not initialized for %s\n", zid)
+		return
+	}
+
+	readReceipt := &core.Notification{
+		UUID:       uuid.New().String(),
+		DispatchID: disp.UUID,
+		From:       zid,
+		To:         disp.From,
+		Type:       "read",
+		Timestamp:  time.Now().Unix(),
+	}
+
+	// Log notification before signing
+	notifJSON, _ := json.MarshalIndent(readReceipt, "", "  ")
+	fmt.Printf("Read receipt before signing: %s\n", notifJSON)
+
+	err = core.SignNotification(readReceipt, edPriv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Sign read receipt: %v\n", err)
+		return
+	}
+
+	// Log notification after signing
+	notifJSON, _ = json.MarshalIndent(readReceipt, "", "  ")
+	fmt.Printf("Read receipt after signing: %s\n", notifJSON)
+
+	if err := storage.StoreReadReceipt(zid, *readReceipt); err != nil {
+		fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
+		return
+	}
+
+	data, err := json.Marshal(readReceipt)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Marshal read receipt: %v\n", err)
+		return
+	}
+	resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if err := storage.StorePendingNotification(zid, *readReceipt); err != nil {
+			fmt.Fprintf(os.Stderr, "Queue read receipt: %v\n", err)
+		} else {
+			fmt.Printf("Read receipt queued due to %v\n", err)
+		}
+		if resp != nil {
+			// Log response body
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Read response body: %v\n", err)
+			} else {
+				fmt.Printf("Server response body: %s\n", body)
+			}
+			resp.Body.Close()
 		}
 	} else {
-		if err := storage.MoveMessage(zid, "out", "unanswered", dispID); err != nil {
-			return fmt.Errorf("move to unanswered: %w", err)
-		}
+		fmt.Println("Read receipt sent successfully")
+		resp.Body.Close()
 	}
-	fmt.Printf("Dispatch %s confirmed delivered\n", dispID)
-	return nil
 }
 
+// handleIncomingNotifications processes incoming notifications.
 func handleIncomingNotifications(zid string, notifs []core.Notification, disps []core.Dispatch) {
 	for _, notif := range notifs {
-		// Verify notification signature for security
-		pubKey, err := base64.StdEncoding.DecodeString(notif.PubKey)
+		// Retrieve public key from server
+		keys, err := fetchPublicKeys(notif.From)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(os.Stderr, "Fetch public keys for %s: %v\n", notif.From, err)
+			continue
+		}
+		pubKey, err := base64.StdEncoding.DecodeString(keys.EdPub)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Decode public key for %s: %v\n", notif.From, err)
 			continue
 		}
 
-		if !verifyNotification(notif, pubKey) {
-			fmt.Fprintf(os.Stderr, "Invalid signature for notification %s from %s\n", notif.UUID, notif.From)
+		// Log notification for verification
+		notifJSON, _ := json.MarshalIndent(notif, "", "  ")
+		fmt.Printf("Verifying notification: %s\n", notifJSON)
+
+		valid, err := core.VerifyNotification(notif, pubKey)
+		if !valid || err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid signature for notification %s from %s: %v\n", notif.UUID, notif.From, err)
 			continue
 		}
 
@@ -369,38 +648,85 @@ func handleIncomingNotifications(zid string, notifs []core.Notification, disps [
 		case "delivery":
 			err := updateDeliveredDispatch(zid, notif.DispatchID, thisDisp)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "update delivered: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Update delivered: %v\n", err)
 			}
 		case "read":
 			err = storage.StoreReadReceipt(zid, notif)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "incoming store read receipt: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
 			}
 		}
 	}
 }
 
+func updateDeliveredDispatch(zid, dispID string, disp core.Dispatch) error {
+	if disp.IsEnd {
+		if err := storage.RemoveMessage(zid, "out", dispID); err != nil {
+			return fmt.Errorf("remove from out: %w", err)
+		}
+	} else {
+		if err := storage.MoveMessage(zid, "out", "unanswered", dispID); err != nil {
+			return fmt.Errorf("move to unanswered: %w", err)
+		}
+	}
+	fmt.Printf("Dispatch %s confirmed delivered\n", dispID)
+	return nil
+}
+
+// func handleIncomingNotifications(zid string, notifs []core.Notification, disps []core.Dispatch) {
+// 	for _, notif := range notifs {
+// 		pubKey, err := base64.StdEncoding.DecodeString(notif.PubKey)
+// 		if err != nil {
+// 			fmt.Fprintf(os.Stderr, "Decode public key: %v\n", err)
+// 			continue
+// 		}
+
+// 		if !verifyNotification(notif, pubKey) {
+// 			fmt.Fprintf(os.Stderr, "Invalid signature for notification %s from %s\n", notif.UUID, notif.From)
+// 			continue
+// 		}
+
+// 		var thisDisp core.Dispatch
+// 		for _, disp := range disps {
+// 			if disp.UUID == notif.DispatchID {
+// 				thisDisp = disp
+// 				break
+// 			}
+// 		}
+// 		switch notif.Type {
+// 		case "delivery":
+// 			err := updateDeliveredDispatch(zid, notif.DispatchID, thisDisp)
+// 			if err != nil {
+// 				fmt.Fprintf(os.Stderr, "Update delivered: %v\n", err)
+// 			}
+// 		case "read":
+// 			err = storage.StoreReadReceipt(zid, notif)
+// 			if err != nil {
+// 				fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
+// 			}
+// 		}
+// 	}
+// }
+
 func pollNotifications(zid string, edPriv ed25519.PrivateKey) {
 	for {
-		// Create signature to make receive request
 		ts, sig, err := createReqSignature(zid, edPriv)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(os.Stderr, "Create request signature: %v\n", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		// Request notifications from the server
 		notifications, _, err := fetchNotifications(zid, ts, sig)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+			fmt.Fprintf(os.Stderr, "Fetch notifications: %v\n", err)
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
 		localDispatches, err := storage.LoadDispatches(zid)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "load dispatches: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
 			continue
 		}
 
@@ -409,8 +735,7 @@ func pollNotifications(zid string, edPriv ed25519.PrivateKey) {
 	}
 }
 
-// createAndSendDispatch creates and sends a new dispatch (reply or regular).
-func createAndSendDispatch(zid, recipient, subject, body, conversationID string, edPriv ed25519.PrivateKey, isEnd bool, storage Storage) error {
+func createAndSendDispatch(zid, recipient, subject, body, conversationID string, edPriv ed25519.PrivateKey, encryptionKey []byte, isEnd bool, storage Storage) error {
 	is, err := LoadIdentity(filepath.Join("data", "identities", fmt.Sprintf("identity_%s.json", zid)))
 	if err != nil {
 		return fmt.Errorf("load identity: %v", err)
@@ -449,36 +774,33 @@ func createAndSendDispatch(zid, recipient, subject, body, conversationID string,
 	}
 	copy(sharedKey[:], shared)
 
-	// Create dispatch with transmission encryption
-	disp, err := core.NewEncryptedDispatch(zid, []string{recipient}, nil, nil, subject, body, conversationID, edPriv, sharedKey, ephemeralPub)
+	disp, err := core.NewEncryptedDispatch(zid, []string{recipient}, nil, nil, subject, body, conversationID, edPriv, sharedKey, ephemeralPub, isEnd)
 	if err != nil {
 		return fmt.Errorf("create dispatch: %w", err)
 	}
-	disp.IsEnd = isEnd
 
-	// Create a copy for local storage
 	localDisp := *disp
 
-	// Get local encryption key
-	ecdhPrivBytes, err := base64.StdEncoding.DecodeString(identity.ECDHPriv)
-	if err != nil {
-		return fmt.Errorf("decode ecdh private key: %w", err)
+	if len(encryptionKey) != 32 {
+		return fmt.Errorf("invalid encryption key size: got %d, expected 32", len(encryptionKey))
 	}
-	var ecdhPriv [32]byte
-	copy(ecdhPriv[:], ecdhPrivBytes)
+
+	edPrivNew, ecdhPriv, err := DecryptIdentity(identity, encryptionKey)
+	if err != nil {
+		return fmt.Errorf("decrypt identity for local storage: %w", err)
+	}
+	_ = edPrivNew // Not used for local storage encryption
+
 	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
 
-	// Encrypt body for local storage using the original plaintext
 	localCiphertext, localNonce, err := core.EncryptAESGCM(localKey[:], []byte(body))
 	if err != nil {
 		return fmt.Errorf("encrypt body for local storage: %w", err)
 	}
 
-	// Update local dispatch with locally encrypted body and nonce
 	localDisp.Body = base64.StdEncoding.EncodeToString(localCiphertext)
 	localDisp.LocalNonce = base64.StdEncoding.EncodeToString(localNonce)
 
-	// Store local dispatch
 	if err := storage.StoreDispatch(zid, localDisp); err != nil {
 		return fmt.Errorf("store dispatch: %w", err)
 	}
@@ -486,7 +808,6 @@ func createAndSendDispatch(zid, recipient, subject, body, conversationID string,
 		return fmt.Errorf("store out: %w", err)
 	}
 
-	// Update conversation
 	convs, err := storage.LoadConversations(zid)
 	if err != nil {
 		return fmt.Errorf("load conversations: %w", err)
@@ -520,7 +841,6 @@ func createAndSendDispatch(zid, recipient, subject, body, conversationID string,
 		}
 	}
 
-	// Send the original transmission-encrypted dispatch
 	data, err := json.Marshal(disp)
 	if err != nil {
 		return fmt.Errorf("marshal dispatch: %w", err)
@@ -539,14 +859,13 @@ func createAndSendDispatch(zid, recipient, subject, body, conversationID string,
 	return nil
 }
 
-// handleAnswer processes the "Answer" option for a dispatch.
-func handleAnswer(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, isEnd bool) bool {
+func handleAnswer(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, encryptionKey []byte, isEnd bool) bool {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("Reply body: ")
 	body, _ := reader.ReadString('\n')
 	body = strings.TrimSpace(body)
 
-	if err := createAndSendDispatch(zid, disp.From, disp.Subject, body, disp.ConversationID, edPriv, isEnd, storage); err != nil {
+	if err := createAndSendDispatch(zid, disp.From, disp.Subject, body, disp.ConversationID, edPriv, encryptionKey, isEnd, storage); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return false
 	}
@@ -560,7 +879,6 @@ func handleAnswer(zid string, disp core.Dispatch, basket string, edPriv ed25519.
 	return true
 }
 
-// handlePending moves a dispatch to the pending basket.
 func handlePending(zid, basket, dispID string) bool {
 	if basket != "pending" {
 		if err := storage.MoveMessage(zid, basket, "pending", dispID); err != nil {
@@ -573,13 +891,11 @@ func handlePending(zid, basket, dispID string) bool {
 	return false
 }
 
-// handleACK removes an ACK dispatch from the basket.
 func handleACK(zid, basket, dispID, dispConvID string, isEnd bool) bool {
 	if !isEnd {
 		fmt.Println("Only ACK dispatches can be removed with this option")
 		return false
 	}
-	fmt.Printf("Try to remove: zid:%s\nbasket:%s\ndisp:%s\n", zid, basket, dispID)
 	if err := storage.RemoveMessage(zid, basket, dispID); err != nil {
 		fmt.Fprintf(os.Stderr, "Remove ACK dispatch: %v\n", err)
 		return false
@@ -592,16 +908,13 @@ func handleACK(zid, basket, dispID, dispConvID string, isEnd bool) bool {
 	return true
 }
 
-// handleExit exits the dispatch view without action.
 func handleExit() bool {
 	return false
 }
 
 func displayDispatch(zid string, disp core.Dispatch, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) {
-	// Get local key
 	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
 
-	// Decrypt body
 	var body string
 	if disp.LocalNonce != "" {
 		ciphertext, err := base64.StdEncoding.DecodeString(disp.Body)
@@ -621,7 +934,6 @@ func displayDispatch(zid string, disp core.Dispatch, edPriv ed25519.PrivateKey, 
 			}
 		}
 	} else {
-		// Legacy handling
 		if disp.Nonce != "" && disp.EphemeralPubKey != "" {
 			err := decryptDispatch(&disp, ecdhPriv)
 			if err != nil {
@@ -634,7 +946,6 @@ func displayDispatch(zid string, disp core.Dispatch, edPriv ed25519.PrivateKey, 
 		}
 	}
 
-	// Display the dispatch
 	fmt.Printf("To: %s From: %s\nSubject: %s", disp.To, disp.From, disp.Subject)
 	if disp.IsEnd {
 		fmt.Printf(" - ACK")
@@ -642,10 +953,9 @@ func displayDispatch(zid string, disp core.Dispatch, edPriv ed25519.PrivateKey, 
 	fmt.Printf("\nBody: %s\n", body)
 }
 
-// handleDispatchView displays a dispatch and prompts for actions.
-func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) bool {
+func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte) bool {
 	displayDispatch(zid, disp, edPriv, ecdhPriv)
-	handleSendRead(disp, zid)
+	handleSendRead(disp, zid, edPriv, encryptionKey)
 	fmt.Println("1. Answer")
 	if disp.IsEnd {
 		fmt.Println("2. Delete ACK")
@@ -663,7 +973,7 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 
 	switch choice {
 	case "1":
-		return handleAnswer(zid, disp, basket, edPriv, false)
+		return handleAnswer(zid, disp, basket, edPriv, encryptionKey, false)
 	case "2":
 		if disp.IsEnd {
 			return handleACK(zid, basket, disp.UUID, disp.ConversationID, disp.IsEnd)
@@ -673,7 +983,7 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 		if disp.IsEnd {
 			return handleExit()
 		}
-		return handleAnswer(zid, disp, basket, edPriv, true)
+		return handleAnswer(zid, disp, basket, edPriv, encryptionKey, true)
 	case "4":
 		if disp.IsEnd {
 			fmt.Println("Invalid option")
@@ -685,8 +995,7 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 	}
 }
 
-// sendNewDispatch creates and sends a new dispatch from user input.
-func sendNewDispatch(zid string, edPriv ed25519.PrivateKey) error {
+func sendNewDispatch(zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) error {
 	reader := bufio.NewReader(os.Stdin)
 	fmt.Print("To: ")
 	to, _ := reader.ReadString('\n')
@@ -698,14 +1007,13 @@ func sendNewDispatch(zid string, edPriv ed25519.PrivateKey) error {
 	body, _ := reader.ReadString('\n')
 	body = strings.TrimSpace(body)
 
-	if err := createAndSendDispatch(zid, to, subject, body, "", edPriv, false, storage); err != nil {
+	if err := createAndSendDispatch(zid, to, subject, body, "", edPriv, encryptionKey, false, storage); err != nil {
 		return err
 	}
 	fmt.Printf("Dispatch sent to %s\n", to)
 	return nil
 }
 
-// selectDispatchFromBasket displays dispatches in a basket and returns the selected one.
 func selectDispatchFromBasket(zid, basket string) (core.Dispatch, bool) {
 	dispIDs, err := storage.LoadBasket(zid, basket)
 	if err != nil {
@@ -758,8 +1066,7 @@ func selectDispatchFromBasket(zid, basket string) (core.Dispatch, bool) {
 	return core.Dispatch{}, false
 }
 
-// viewBasket displays and processes dispatches in a specified basket.
-func viewBasket(zid, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte) {
+func viewBasket(zid, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte) {
 	if basket == "unanswered" {
 		dispIDs, err := storage.LoadBasket(zid, basket)
 		if err != nil {
@@ -826,12 +1133,11 @@ func viewBasket(zid, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte
 	if !ok {
 		return
 	}
-	if handleDispatchView(zid, disp, basket, edPriv, ecdhPriv) {
+	if handleDispatchView(zid, disp, basket, edPriv, ecdhPriv, encryptionKey) {
 		fmt.Println("Dispatch processed")
 	}
 }
 
-// min returns the smaller of two durations.
 func min(a, b time.Duration) time.Duration {
 	if a < b {
 		return a
@@ -840,72 +1146,62 @@ func min(a, b time.Duration) time.Duration {
 }
 
 func main() {
-	zid := flag.String("zid", "", "ZID for this client")
-	flag.Parse()
-	if *zid == "" {
-		var err error
-		*zid, err = promptNewOrLogin()
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("1. Login\n2. Create Account\nChoose an option: ")
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+
+	var zid string
+	var edPriv ed25519.PrivateKey
+	var ecdhPriv [32]byte
+	var encryptionKey []byte
+	var err error
+
+	if choice == "1" {
+		zid, edPriv, ecdhPriv, encryptionKey, err = promptLogin()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to get ZID: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
 			os.Exit(1)
 		}
-	}
-
-	// Initialize SQLite storage
-	var err error
-	storage, err = NewSQLiteStorage(*zid)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Initialize storage: %v\n", err)
+	} else if choice == "2" {
+		fmt.Print("Username: ")
+		username, _ := reader.ReadString('\n')
+		username = strings.TrimSpace(username)
+		fmt.Print("Password: ")
+		passwordBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Read password: %v\n", err)
+			os.Exit(1)
+		}
+		if err := createAccount(username, string(passwordBytes)); err != nil {
+			fmt.Fprintf(os.Stderr, "Create account: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println("Account created. Please login.")
+		zid, edPriv, ecdhPriv, encryptionKey, err = promptLogin()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Login failed: %v\n", err)
+			os.Exit(1)
+		}
+	} else {
+		fmt.Fprintf(os.Stderr, "Invalid option\n")
 		os.Exit(1)
 	}
 
-	// Initialize baskets inbox, pending, out, unanswered
-	if err := initBaskets(*zid); err != nil {
+	if err := initBaskets(zid); err != nil {
 		fmt.Fprintf(os.Stderr, "Initialize baskets: %v\n", err)
 		os.Exit(1)
 	}
 
-	is, err := LoadIdentity(filepath.Join("data", "identities", fmt.Sprintf("identity_%s.json", *zid)))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Load identity: %v\n", err)
-		os.Exit(1)
-	}
-	if is.identity == nil {
-		fmt.Fprintf(os.Stderr, "Identity for %s not found\n", *zid)
-		os.Exit(1)
-	}
-	identity := is.identity
+	go checkForMessages(zid, edPriv, ecdhPriv, encryptionKey)
+	go pollNotifications(zid, edPriv)
 
-	edPriv, err := base64.StdEncoding.DecodeString(identity.EdPriv)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Decode ed private key: %v\n", err)
-		os.Exit(1)
-	}
-
-	ecdhPrivBytes, err := base64.StdEncoding.DecodeString(identity.ECDHPriv)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Decode ecdh private key: %v\n", err)
-		os.Exit(1)
-	}
-	var ecdhPriv [32]byte
-	copy(ecdhPriv[:], ecdhPrivBytes)
-
-	go checkForMessages(*zid, edPriv, ecdhPriv)
-	go pollNotifications(*zid, edPriv)
-
-	reader := bufio.NewReader(os.Stdin)
+	reader = bufio.NewReader(os.Stdin)
 	for {
-		inIds, pendingIds, outIds, unansweredIds, err := LoadBaskets(*zid)
+		inIds, pendingIds, outIds, unansweredIds, err := LoadBaskets(zid)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to load baskets: %v\n", err)
-			fmt.Println("\n1. Send Dispatch")
-			fmt.Println("2. View Inbox")
-			fmt.Println("3. View Pending")
-			fmt.Println("4. View Out")
-			fmt.Println("5. View Unanswered")
-			fmt.Println("6. View Conversations")
-			fmt.Println("7. Exit")
-			fmt.Print("Choose an option: ")
 		}
 
 		fmt.Printf("\n1. Send Dispatch\n")
@@ -918,26 +1214,26 @@ func main() {
 		fmt.Printf("8. Exit\n")
 		fmt.Print("Choose an option: ")
 
-		choice, _ := reader.ReadString('\n')
+		choice, _ = reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
 
 		switch choice {
 		case "1":
-			if err := sendNewDispatch(*zid, edPriv); err != nil {
+			if err := sendNewDispatch(zid, edPriv, encryptionKey); err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
 		case "2":
-			viewBasket(*zid, "inbox", edPriv, ecdhPriv)
+			viewBasket(zid, "inbox", edPriv, ecdhPriv, encryptionKey)
 		case "3":
-			viewBasket(*zid, "pending", edPriv, ecdhPriv)
+			viewBasket(zid, "pending", edPriv, ecdhPriv, encryptionKey)
 		case "4":
-			viewBasket(*zid, "out", edPriv, ecdhPriv)
+			viewBasket(zid, "out", edPriv, ecdhPriv, encryptionKey)
 		case "5":
-			viewBasket(*zid, "unanswered", edPriv, ecdhPriv)
+			viewBasket(zid, "unanswered", edPriv, ecdhPriv, encryptionKey)
 		case "6":
-			viewConversations(*zid, ecdhPriv, false)
+			viewConversations(zid, ecdhPriv, false)
 		case "7":
-			viewConversations(*zid, ecdhPriv, true)
+			viewConversations(zid, ecdhPriv, true)
 		case "8":
 			os.Exit(0)
 		default:
@@ -945,6 +1241,94 @@ func main() {
 		}
 	}
 }
+
+func processPendingNotifications(zid string) error {
+	notifs, err := storage.LoadPendingNotifications(zid)
+	if err != nil {
+		return fmt.Errorf("load pending notifications: %w", err)
+	}
+	if len(notifs) == 0 {
+		return nil
+	}
+
+	for _, notif := range notifs {
+		data, err := json.Marshal(notif)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Marshal pending notification %s: %v\n", notif.UUID, err)
+			continue
+		}
+		resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Send pending notification %s: %v\n", notif.UUID, err)
+			continue
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			fmt.Fprintf(os.Stderr, "Send pending notification %s failed: %s\n", notif.UUID, resp.Status)
+			continue
+		}
+
+		if err := storage.RemovePendingNotification(zid, notif.UUID, notif.Type); err != nil {
+			fmt.Fprintf(os.Stderr, "Remove pending notification %s: %v\n", notif.UUID, err)
+			continue
+		}
+		fmt.Printf("Sent queued %s notification %s\n", notif.Type, notif.UUID)
+	}
+	return nil
+}
+
+// func handleSendRead(disp core.Dispatch, zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) {
+// 	fmt.Printf("Ed25519 private key length before signing read receipt: %d\n", len(edPriv))
+// 	identity, err := LoadIdentity(getIdentityPath(zid))
+// 	if err != nil {
+// 		fmt.Fprintf(os.Stderr, "Couldn't load identity for read receipt: %v\n", err)
+// 		return
+// 	}
+// 	if identity.identity == nil {
+// 		fmt.Fprintf(os.Stderr, "Identity not initialized for %s\n", zid)
+// 		return
+// 	}
+
+// 	readReceipt := core.Notification{
+// 		UUID:       uuid.New().String(),
+// 		DispatchID: disp.UUID,
+// 		From:       zid,
+// 		To:         disp.From,
+// 		Type:       "read",
+// 		Timestamp:  time.Now().Unix(),
+// 		PubKey:     identity.identity.EdPub,
+// 	}
+// 	readReceipt.Signature, err = signNotification(readReceipt, edPriv)
+// 	if err != nil {
+// 		fmt.Fprintf(os.Stderr, "Sign read receipt: %v\n", err)
+// 		return
+// 	}
+
+// 	if err := storage.StoreReadReceipt(zid, readReceipt); err != nil {
+// 		fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
+// 		return
+// 	}
+
+// 	data, err := json.Marshal(readReceipt)
+// 	if err != nil {
+// 		fmt.Fprintf(os.Stderr, "Marshal read receipt: %v\n", err)
+// 		return
+// 	}
+// 	resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
+// 	if err != nil || resp.StatusCode != http.StatusOK {
+// 		if err := storage.StorePendingNotification(zid, readReceipt); err != nil {
+// 			fmt.Fprintf(os.Stderr, "Queue read receipt: %v\n", err)
+// 		} else {
+// 			fmt.Printf("Read receipt queued due to %v\n", err)
+// 		}
+// 		if resp != nil {
+// 			resp.Body.Close()
+// 		}
+// 	} else {
+// 		fmt.Println("Read receipt sent successfully")
+// 		resp.Body.Close()
+// 	}
+// }
 
 func LoadBaskets(zid string) ([]string, []string, []string, []string, error) {
 	inIds, err := storage.LoadBasket(zid, "inbox")
@@ -965,99 +1349,4 @@ func LoadBaskets(zid string) ([]string, []string, []string, []string, error) {
 	}
 
 	return inIds, pendingIds, outIds, unansweredIds, nil
-}
-
-func handleSendRead(disp core.Dispatch, zid string) {
-	identity, err := LoadIdentity(getIdentityPath(zid))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "couldn't load identity send read: %v\n", err)
-		return
-	}
-	if identity.identity == nil {
-		fmt.Fprintf(os.Stderr, "identity not initialized for %s\n", zid)
-		return
-	}
-	edPub, err := base64.StdEncoding.DecodeString(identity.identity.EdPub)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "decode ed public key: %v\n", err)
-		return
-	}
-	readReceipt := core.Notification{
-		UUID:       uuid.New().String(),
-		DispatchID: disp.UUID,
-		From:       zid,
-		To:         disp.From,
-		Type:       "read",
-		Timestamp:  time.Now().Unix(),
-		PubKey:     base64.StdEncoding.EncodeToString(edPub),
-	}
-	readReceipt.Signature, err = signNotification(identity.identity, readReceipt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Sign read receipt: %v\n", err)
-		return
-	}
-
-	// Store read receipt locally
-	if err := storage.StoreReadReceipt(zid, readReceipt); err != nil {
-		fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
-		return
-	}
-
-	// Attempt to send read receipt
-	data, err := json.Marshal(readReceipt)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Marshal read receipt: %v\n", err)
-		return
-	}
-	resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		// Queue if offline or server error
-		if err := storage.StorePendingNotification(zid, readReceipt); err != nil {
-			fmt.Fprintf(os.Stderr, "Queue read receipt: %v\n", err)
-			return
-		}
-		fmt.Printf("Offline or server error, read receipt queued\n")
-		if resp != nil {
-			resp.Body.Close()
-		}
-	} else {
-		resp.Body.Close()
-	}
-}
-
-// processPendingNotifications sends queued notifications when online
-func processPendingNotifications(zid string) error {
-	notifs, err := storage.LoadPendingNotifications(zid)
-	if err != nil {
-		return fmt.Errorf("load pending notifications: %w", err)
-	}
-	if len(notifs) == 0 {
-		return nil
-	}
-
-	for _, notif := range notifs {
-		data, err := json.Marshal(notif)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Marshal pending notification %s: %v\n", notif.DispatchID, err)
-			continue
-		}
-		resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Send pending notification %s: %v\n", notif.DispatchID, err)
-			continue
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			fmt.Fprintf(os.Stderr, "Send pending notification %s failed: %s\n", notif.DispatchID, resp.Status)
-			continue
-		}
-
-		// Remove from queue
-		if err := storage.RemovePendingNotification(zid, notif.DispatchID, notif.Type); err != nil {
-			fmt.Fprintf(os.Stderr, "Remove pending notification %s: %v\n", notif.DispatchID, err)
-			continue
-		}
-		fmt.Printf("Sent queued %s notification for %s\n", notif.Type, notif.DispatchID)
-	}
-	return nil
 }
