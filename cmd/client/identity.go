@@ -212,7 +212,7 @@ func GenerateAndStoreNewIdentity(encryptionKey []byte) (*Identity, error) {
 		return nil, fmt.Errorf("marshal identity: %w", err)
 	}
 
-	resp, err := http.Post("http://localhost:8080/identity", "application/json", bytes.NewReader(data))
+	resp, err := http.Post(fmt.Sprintf("%s/identity", serverURL), "application/json", bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("register identity: %w", err)
 	}

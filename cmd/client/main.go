@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -23,7 +24,19 @@ import (
 	"golang.org/x/term"
 )
 
-const serverURL = "http://localhost:8080"
+const serverURL = "https://localhost:8443"
+
+// Initialize HTTP client with custom TLS configuration to accept self-signed certificates
+func init() {
+	// Create a custom HTTP client that accepts self-signed certificates
+	http.DefaultClient = &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, // WARNING: Only for development with self-signed certs
+			},
+		},
+	}
+}
 
 var storage Storage
 
@@ -962,7 +975,7 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 		fmt.Println("3. Exit")
 	} else {
 		fmt.Println("2. Place in Pending")
-		fmt.Println("3. End Conversation")
+		fmt.Println("3. ACK")
 		fmt.Println("4. Exit")
 	}
 	fmt.Print("Choose an option: ")

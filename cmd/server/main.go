@@ -1,4 +1,4 @@
-//cmd/server/main.go
+// cmd/server/main.go
 package main
 
 import (
@@ -33,23 +33,26 @@ func main() {
 	http.HandleFunc("/publish", HandlePublishKeys(keyStore))
 	http.HandleFunc("/pubkey", HandleFetchKeys(keyStore))
 
-	log.Println("ZComm Switchboard server running on :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("ZComm Switchboard server running on :8443")
+	err = http.ListenAndServeTLS(":8443", "data/certs/server.crt", "data/certs/server.key", nil)
+	if err != nil {
+		log.Fatalf("Failed to start TLS server: %v", err)
+	}
 }
 
 type Inbox struct {
-	mu      sync.RWMutex
+	mu sync.RWMutex
 	//map[zid]dispatch
-	inbox   map[string][]core.Dispatch
-	keyring *KeyStore
+	inbox         map[string][]core.Dispatch
+	keyring       *KeyStore
 	notifications map[string][]core.Notification
 }
 
 func NewInbox(keyring *KeyStore) *Inbox {
 	return &Inbox{
 		//map[zid]dispatch
-		inbox:   make(map[string][]core.Dispatch),
-		keyring: keyring,
-		notifications:    make(map[string][]core.Notification),
+		inbox:         make(map[string][]core.Dispatch),
+		keyring:       keyring,
+		notifications: make(map[string][]core.Notification),
 	}
 }
