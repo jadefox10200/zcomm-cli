@@ -50,7 +50,7 @@ func GenerateNotificationHash(notif Notification) string {
 		notif.To,
 		notif.Type,
 		notif.Timestamp)
-	fmt.Printf("Notification hash input: %s\n", hashInput)
+	// fmt.Printf("Notification hash input: %s\n", hashInput)
 	return hashInput
 }
 
@@ -77,12 +77,12 @@ func SignDispatch(disp *Dispatch, privKey ed25519.PrivateKey) error {
 func SignNotification(notif *Notification, privKey ed25519.PrivateKey) error {
 	hashInput := GenerateNotificationHash(*notif)
 	digest := sha256.Sum256([]byte(hashInput))
-	fmt.Printf("Notification digest: %x\n", digest)
+	// fmt.Printf("Notification digest: %x\n", digest)
 	sig, err := Sign(digest[:], privKey)
 	if err != nil {
 		return fmt.Errorf("sign notification: %w", err)
 	}
-	fmt.Printf("Notification signature: %s\n", sig)
+	// fmt.Printf("Notification signature: %s\n", sig)
 	notif.Signature = sig
 	return nil
 }
@@ -98,6 +98,6 @@ func VerifyDispatch(disp Dispatch, pubKey []byte) (bool, error) {
 func VerifyNotification(notif Notification, pubKey []byte) (bool, error) {
 	hashInput := GenerateNotificationHash(notif)
 	digest := sha256.Sum256([]byte(hashInput))
-	fmt.Printf("Verify notification digest: %x\n", digest)
+	// fmt.Printf("Verify notification digest: %x\n", digest)
 	return VerifySignature(pubKey, digest[:], notif.Signature)
 }

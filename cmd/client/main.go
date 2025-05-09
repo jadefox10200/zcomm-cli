@@ -228,7 +228,7 @@ func promptLogin() (string, ed25519.PrivateKey, [32]byte, []byte, error) {
 	if err != nil {
 		return "", nil, [32]byte{}, nil, fmt.Errorf("decrypt identity: %w", err)
 	}
-	fmt.Printf("Ed25519 private key length after decryption: %d\n", len(edPriv))
+	// fmt.Printf("Ed25519 private key length after decryption: %d\n", len(edPriv))
 
 	return zid, edPriv, ecdhPriv, encryptionKey, nil
 }
@@ -365,36 +365,27 @@ func storeDispatchAndUpdateConversation(zid string, disp core.Dispatch, dispatch
 		return fmt.Errorf("store dispatch: %w", err)
 	}
 
-	convs, err := storage.LoadConversations(zid)
+	// Load the specific conversation
+	conv, err := storage.LoadConversation(zid, disp.ConversationID)
 	if err != nil {
-		return fmt.Errorf("load conversations: %w", err)
+		return fmt.Errorf("load conversation %s: %w", disp.ConversationID, err)
 	}
 
+	// Determine the next sequence number
 	seqNo := 1
-	for _, conv := range convs {
-		if conv.ConID == disp.ConversationID {
-			for _, entry := range conv.Dispatches {
-				if entry.SeqNo >= seqNo {
-					seqNo = entry.SeqNo + 1
-				}
-			}
-			break
+	for _, entry := range conv.Dispatches {
+		if entry.SeqNo >= seqNo {
+			seqNo = entry.SeqNo + 1
 		}
 	}
 
-	if err := storage.StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo, disp.Subject); err != nil {
+	// Store or update the conversation with the dispatch and Ended status
+	if err := storage.StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo, disp.Subject, disp.IsEnd); err != nil {
 		return fmt.Errorf("store conversation: %w", err)
 	}
 
 	if err := storage.StoreBasket(zid, "inbox", disp.UUID); err != nil {
 		return fmt.Errorf("store in inbox: %w", err)
-	}
-
-	if disp.IsEnd {
-		if err := storage.ArchiveConversation(zid, disp.ConversationID, true); err != nil {
-			return fmt.Errorf("archive conversation: %w", err)
-		}
-		fmt.Printf("Conversation %s archived due to end signal from %s\n", disp.ConversationID, disp.From)
 	}
 
 	unanswered, err := storage.LoadBasket(zid, "unanswered")
@@ -451,6 +442,7 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 			continue
 		}
 
+		//why do we need to load all dispatches?
 		localDispatches, err := storage.LoadDispatches(zid)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
@@ -486,7 +478,7 @@ func checkForMessages(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 
 // handleSendDelivery sends a delivery notification for a dispatch.
 func handleSendDelivery(disp core.Dispatch, zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) {
-	fmt.Printf("Ed25519 private key length before signing notification: %d\n", len(edPriv))
+	// fmt.Printf("Ed25519 private key length before signing notification: %d\n", len(edPriv))
 	identity, err := LoadIdentity(getIdentityPath(zid))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load identity: %v\n", err)
@@ -507,8 +499,8 @@ func handleSendDelivery(disp core.Dispatch, zid string, edPriv ed25519.PrivateKe
 	}
 
 	// Log notification before signing
-	notifJSON, _ := json.MarshalIndent(deliveryReceipt, "", "  ")
-	fmt.Printf("Notification before signing: %s\n", notifJSON)
+	// notifJSON, _ := json.MarshalIndent(deliveryReceipt, "", "  ")
+	// fmt.Printf("Notification before signing: %s\n", notifJSON)
 
 	err = core.SignNotification(deliveryReceipt, edPriv)
 	if err != nil {
@@ -517,8 +509,8 @@ func handleSendDelivery(disp core.Dispatch, zid string, edPriv ed25519.PrivateKe
 	}
 
 	// Log notification after signing
-	notifJSON, _ = json.MarshalIndent(deliveryReceipt, "", "  ")
-	fmt.Printf("Notification after signing: %s\n", notifJSON)
+	// notifJSON, _ = json.MarshalIndent(deliveryReceipt, "", "  ")
+	// fmt.Printf("Notification after signing: %s\n", notifJSON)
 
 	data, err := json.Marshal(deliveryReceipt)
 	if err != nil {
@@ -641,8 +633,8 @@ func handleIncomingNotifications(zid string, notifs []core.Notification, disps [
 		}
 
 		// Log notification for verification
-		notifJSON, _ := json.MarshalIndent(notif, "", "  ")
-		fmt.Printf("Verifying notification: %s\n", notifJSON)
+		// notifJSON, _ := json.MarshalIndent(notif, "", "  ")
+		// fmt.Printf("Verifying notification: %s\n", notifJSON)
 
 		valid, err := core.VerifyNotification(notif, pubKey)
 		if !valid || err != nil {
@@ -685,41 +677,6 @@ func updateDeliveredDispatch(zid, dispID string, disp core.Dispatch) error {
 	fmt.Printf("Dispatch %s confirmed delivered\n", dispID)
 	return nil
 }
-
-// func handleIncomingNotifications(zid string, notifs []core.Notification, disps []core.Dispatch) {
-// 	for _, notif := range notifs {
-// 		pubKey, err := base64.StdEncoding.DecodeString(notif.PubKey)
-// 		if err != nil {
-// 			fmt.Fprintf(os.Stderr, "Decode public key: %v\n", err)
-// 			continue
-// 		}
-
-// 		if !verifyNotification(notif, pubKey) {
-// 			fmt.Fprintf(os.Stderr, "Invalid signature for notification %s from %s\n", notif.UUID, notif.From)
-// 			continue
-// 		}
-
-// 		var thisDisp core.Dispatch
-// 		for _, disp := range disps {
-// 			if disp.UUID == notif.DispatchID {
-// 				thisDisp = disp
-// 				break
-// 			}
-// 		}
-// 		switch notif.Type {
-// 		case "delivery":
-// 			err := updateDeliveredDispatch(zid, notif.DispatchID, thisDisp)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Update delivered: %v\n", err)
-// 			}
-// 		case "read":
-// 			err = storage.StoreReadReceipt(zid, notif)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
-// 			}
-// 		}
-// 	}
-// }
 
 func pollNotifications(zid string, edPriv ed25519.PrivateKey) {
 	for {
@@ -821,37 +778,25 @@ func createAndSendDispatch(zid, recipient, subject, body, conversationID string,
 		return fmt.Errorf("store out: %w", err)
 	}
 
-	convs, err := storage.LoadConversations(zid)
+	// Load the specific conversation. Use the ConversationID from the Dispatch as this may might be a new Conversation.
+	//if this is new, conv will be empty
+	conv, err := storage.LoadConversation(zid, disp.ConversationID)
 	if err != nil {
-		return fmt.Errorf("load conversations: %w", err)
-	}
-	seqNo := 1
-	for _, conv := range convs {
-		if conv.ConID == disp.ConversationID {
-			for _, entry := range conv.Dispatches {
-				if entry.SeqNo >= seqNo {
-					seqNo = entry.SeqNo + 1
-				}
-			}
-		}
-	}
-	if err := storage.StoreConversation(zid, disp.ConversationID, disp.UUID, seqNo, disp.Subject); err != nil {
-		return fmt.Errorf("store conversation: %w", err)
+		return fmt.Errorf("load conversation %s: %w", conversationID, err)
 	}
 
-	if isEnd {
-		for i, conv := range convs {
-			if conv.ConID == disp.ConversationID {
-				convs[i].Ended = true
-				if err := storage.StoreConversation(zid, conv.ConID, "", 0, conv.Subject); err != nil {
-					return fmt.Errorf("update conversation: %w", err)
-				}
-				break
-			}
+	// Determine the next sequence number
+	//this doesn't work:
+	seqNo := 1
+	for _, entry := range conv.Dispatches {
+		if entry.SeqNo >= seqNo {
+			seqNo = entry.SeqNo + 1
 		}
-		if err := storage.EndConversation(zid, disp.ConversationID, isEnd); err != nil {
-			return fmt.Errorf("archive conversation: %w", err)
-		}
+	}
+
+	// Store or update the conversation with the dispatch and Ended status
+	if err := storage.StoreConversation(zid, disp.ConversationID, localDisp.UUID, seqNo, subject, isEnd); err != nil {
+		return fmt.Errorf("store conversation: %w", err)
 	}
 
 	data, err := json.Marshal(disp)
@@ -883,6 +828,7 @@ func handleAnswer(zid string, disp core.Dispatch, basket string, edPriv ed25519.
 		return false
 	}
 
+	fmt.Printf("About to remove basket: %v\n", basket)
 	if err := storage.RemoveMessage(zid, basket, disp.UUID); err != nil {
 		fmt.Fprintf(os.Stderr, "Remove original: %v\n", err)
 		return false
@@ -904,17 +850,15 @@ func handlePending(zid, basket, dispID string) bool {
 	return false
 }
 
-func handleACK(zid, basket, dispID, dispConvID string, isEnd bool) bool {
+// this function is used solely to delete an ack:
+// updating the conversation status to Ended should happen at some point before this function
+func handleACK(zid, basket, dispID string, isEnd bool) bool {
 	if !isEnd {
 		fmt.Println("Only ACK dispatches can be removed with this option")
 		return false
 	}
 	if err := storage.RemoveMessage(zid, basket, dispID); err != nil {
 		fmt.Fprintf(os.Stderr, "Remove ACK dispatch: %v\n", err)
-		return false
-	}
-	if err := storage.EndConversation(zid, dispConvID, isEnd); err != nil {
-		fmt.Fprintf(os.Stderr, "Archive conversation: %v\n", err)
 		return false
 	}
 	fmt.Println("ACK dispatch removed")
@@ -968,16 +912,24 @@ func displayDispatch(zid string, disp core.Dispatch, edPriv ed25519.PrivateKey, 
 
 func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte) bool {
 	displayDispatch(zid, disp, edPriv, ecdhPriv)
-	handleSendRead(disp, zid, edPriv, encryptionKey)
+	if basket == "inbox" {
+		handleSendRead(disp, zid, edPriv, encryptionKey)
+		processed := handlePending(zid, "inbox", disp.UUID)
+		if !processed {
+			fmt.Println("Displayed but failed to process dispatch")
+			return false
+		}
+		//since we moved the message we need to update the basket.
+		basket = "pending"
+	}
+
 	fmt.Println("1. Answer")
 	if disp.IsEnd {
 		fmt.Println("2. Delete ACK")
-		fmt.Println("3. Exit")
 	} else {
-		fmt.Println("2. Place in Pending")
-		fmt.Println("3. ACK")
-		fmt.Println("4. Exit")
+		fmt.Println("2. ACK")
 	}
+	fmt.Println("3. Exit")
 	fmt.Print("Choose an option: ")
 
 	reader := bufio.NewReader(os.Stdin)
@@ -989,19 +941,11 @@ func handleDispatchView(zid string, disp core.Dispatch, basket string, edPriv ed
 		return handleAnswer(zid, disp, basket, edPriv, encryptionKey, false)
 	case "2":
 		if disp.IsEnd {
-			return handleACK(zid, basket, disp.UUID, disp.ConversationID, disp.IsEnd)
-		}
-		return handlePending(zid, basket, disp.UUID)
-	case "3":
-		if disp.IsEnd {
-			return handleExit()
+			return handleACK(zid, basket, disp.UUID, disp.IsEnd)
 		}
 		return handleAnswer(zid, disp, basket, edPriv, encryptionKey, true)
-	case "4":
-		if disp.IsEnd {
-			fmt.Println("Invalid option")
-		}
-		return false
+	case "3":
+		return handleExit()
 	default:
 		fmt.Println("Invalid option")
 		return false
@@ -1202,10 +1146,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := initBaskets(zid); err != nil {
-		fmt.Fprintf(os.Stderr, "Initialize baskets: %v\n", err)
-		os.Exit(1)
-	}
+	// if err := initBaskets(zid); err != nil {
+	// 	fmt.Fprintf(os.Stderr, "Initialize baskets: %v\n", err)
+	// 	os.Exit(1)
+	// }
 
 	go checkForMessages(zid, edPriv, ecdhPriv, encryptionKey)
 	go pollNotifications(zid, edPriv)
@@ -1289,59 +1233,6 @@ func processPendingNotifications(zid string) error {
 	}
 	return nil
 }
-
-// func handleSendRead(disp core.Dispatch, zid string, edPriv ed25519.PrivateKey, encryptionKey []byte) {
-// 	fmt.Printf("Ed25519 private key length before signing read receipt: %d\n", len(edPriv))
-// 	identity, err := LoadIdentity(getIdentityPath(zid))
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Couldn't load identity for read receipt: %v\n", err)
-// 		return
-// 	}
-// 	if identity.identity == nil {
-// 		fmt.Fprintf(os.Stderr, "Identity not initialized for %s\n", zid)
-// 		return
-// 	}
-
-// 	readReceipt := core.Notification{
-// 		UUID:       uuid.New().String(),
-// 		DispatchID: disp.UUID,
-// 		From:       zid,
-// 		To:         disp.From,
-// 		Type:       "read",
-// 		Timestamp:  time.Now().Unix(),
-// 		PubKey:     identity.identity.EdPub,
-// 	}
-// 	readReceipt.Signature, err = signNotification(readReceipt, edPriv)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Sign read receipt: %v\n", err)
-// 		return
-// 	}
-
-// 	if err := storage.StoreReadReceipt(zid, readReceipt); err != nil {
-// 		fmt.Fprintf(os.Stderr, "Store read receipt: %v\n", err)
-// 		return
-// 	}
-
-// 	data, err := json.Marshal(readReceipt)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Marshal read receipt: %v\n", err)
-// 		return
-// 	}
-// 	resp, err := http.Post(serverURL+"/notification_push", "application/json", bytes.NewReader(data))
-// 	if err != nil || resp.StatusCode != http.StatusOK {
-// 		if err := storage.StorePendingNotification(zid, readReceipt); err != nil {
-// 			fmt.Fprintf(os.Stderr, "Queue read receipt: %v\n", err)
-// 		} else {
-// 			fmt.Printf("Read receipt queued due to %v\n", err)
-// 		}
-// 		if resp != nil {
-// 			resp.Body.Close()
-// 		}
-// 	} else {
-// 		fmt.Println("Read receipt sent successfully")
-// 		resp.Body.Close()
-// 	}
-// }
 
 func LoadBaskets(zid string) ([]string, []string, []string, []string, error) {
 	inIds, err := storage.LoadBasket(zid, "inbox")

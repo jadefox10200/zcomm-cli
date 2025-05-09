@@ -5,6 +5,20 @@
 
 This roadmap prioritizes features for Zcomm, aligning with its mission as a secure, action-oriented messaging platform. The email gateway is excluded due to complexity and security risks. Rotating keys and device sync are added for security and usability.
 
+## Smith Notes:
+- Implement "decline" as an option for dispatches. This will also send a notification of type deline. 
+  This allows users to not answer a dispatch and simply decline to answer and informing the original 
+  of the action so it is removed from unaswered. This is basically a non-verbal ack and will archive the 
+  conversation. 
+- Possibly need a discussion data model. Right now we have a conversation. When we add CC how do we handle someone
+  who decides to answer a CC? This would start a new conversation but there is no link between the two even thos the
+  dispatch will then appear in two conversations. We would need a discussion model. While this won't have an active/inactive
+  status, we still should provide the ability to view a discussion and select any conversation. This way if we have an 
+  entire team talking, we can view the discussion. If Joe is get CC from two conversations on the same discussion, he can 
+  then view the discussion. Discussions don't have unique subjects. Since they can only start from a single conversation, every
+  dispatch in a discussion will always match the conversation subjects no matter how many conversations start. This is simply something more on the back end to link up and track for when CC is implemented. 
+- Remove the multiple To field. 
+
 ## Phase 1: Security and Core Usability (0-3 Months)
 - **Login System for Key Security**
   - Encrypt private keys with password-derived keys (Argon2).

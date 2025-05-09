@@ -106,7 +106,7 @@ func (is *IdentityStore) CreateIfNotExists(encryptionKey []byte) (*Identity, err
 	if len(priv) != 64 {
 		return nil, fmt.Errorf("invalid ed25519 private key length: got %d, expected 64", len(priv))
 	}
-	fmt.Printf("Generated Ed25519 private key length: %d\n", len(priv))
+	// fmt.Printf("Generated Ed25519 private key length: %d\n", len(priv))
 
 	ecdh, err := core.GenerateECDHKeyPair()
 	if err != nil {
@@ -161,7 +161,7 @@ func GenerateAndStoreNewIdentity(encryptionKey []byte) (*Identity, error) {
 	if len(priv) != 64 {
 		return nil, fmt.Errorf("invalid ed25519 private key length: got %d, expected 64", len(priv))
 	}
-	fmt.Printf("Generated Ed25519 private key length: %d\n", len(priv))
+	// fmt.Printf("Generated Ed25519 private key length: %d\n", len(priv))
 
 	ecdh, err := core.GenerateECDHKeyPair()
 	if err != nil {
@@ -182,7 +182,7 @@ func GenerateAndStoreNewIdentity(encryptionKey []byte) (*Identity, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encrypt ecdh private key: %w", err)
 	}
-	fmt.Printf("Encrypted ECDH private key ciphertext length: %d\n", len(ecdhPrivCipher))
+	// fmt.Printf("Encrypted ECDH private key ciphertext length: %d\n", len(ecdhPrivCipher))
 	if len(ecdhPrivCipher) != 48 {
 		return nil, fmt.Errorf("unexpected ecdh ciphertext length: got %d, expected 48", len(ecdhPrivCipher))
 	}
@@ -240,7 +240,7 @@ func DecryptIdentity(identity *Identity, encryptionKey []byte) (ed25519.PrivateK
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("decode ed priv: %w", err)
 	}
-	fmt.Printf("Ed25519 private key ciphertext length: %d\n", len(edPrivCipher))
+	// fmt.Printf("Ed25519 private key ciphertext length: %d\n", len(edPrivCipher))
 	if len(edPrivCipher) != 80 {
 		fmt.Printf("Warning: Expected Ed25519 ciphertext length 80, got %d. Consider regenerating identity.\n", len(edPrivCipher))
 	}
@@ -252,7 +252,7 @@ func DecryptIdentity(identity *Identity, encryptionKey []byte) (ed25519.PrivateK
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("decrypt ed priv: %w", err)
 	}
-	fmt.Printf("Decrypted Ed25519 private key length: %d\n", len(edPriv))
+	// fmt.Printf("Decrypted Ed25519 private key length: %d\n", len(edPriv))
 	if len(edPriv) != 64 {
 		if len(edPriv) == 80 {
 			fmt.Printf("Warning: Decrypted Ed25519 private key is 80 bytes, trimming to 64 bytes. Please regenerate identity.\n")
@@ -266,7 +266,7 @@ func DecryptIdentity(identity *Identity, encryptionKey []byte) (ed25519.PrivateK
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("decode ecdh priv: %w", err)
 	}
-	fmt.Printf("ECDH private key ciphertext length: %d\n", len(ecdhPrivCipher))
+	// fmt.Printf("ECDH private key ciphertext length: %d\n", len(ecdhPrivCipher))
 	if len(ecdhPrivCipher) != 48 {
 		fmt.Printf("Warning: Expected ECDH ciphertext length 48, got %d. Consider regenerating identity.\n", len(ecdhPrivCipher))
 	}
@@ -278,7 +278,7 @@ func DecryptIdentity(identity *Identity, encryptionKey []byte) (ed25519.PrivateK
 	if err != nil {
 		return nil, [32]byte{}, fmt.Errorf("decrypt ecdh priv: %w", err)
 	}
-	fmt.Printf("Decrypted ECDH private key length: %d\n", len(ecdhPrivBytes))
+	// fmt.Printf("Decrypted ECDH private key length: %d\n", len(ecdhPrivBytes))
 	if len(ecdhPrivBytes) != 32 {
 		return nil, [32]byte{}, fmt.Errorf("invalid decrypted ecdh private key length: got %d, expected 32", len(ecdhPrivBytes))
 	}

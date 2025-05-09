@@ -68,6 +68,8 @@ func NewEncryptedDispatch(from string, to, cc, via []string, subject, body strin
 
 	encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
 	timestamp := time.Now().Unix()
+
+	//if the convID is empty, this must be a NEW dispatch so we need to start the conversation:
 	if convID == "" {
 		convID = uuid.New().String()
 	}

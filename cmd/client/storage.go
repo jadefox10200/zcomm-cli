@@ -5,7 +5,8 @@ import (
 	"bufio"
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
+
+	// "encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,8 +30,10 @@ type Storage interface {
 	LoadBasket(zid, basket string) ([]string, error)
 	MoveMessage(zid, fromBasket, toBasket, dispID string) error
 	RemoveMessage(zid, basket, dispID string) error
-	StoreConversation(zid, conID, dispID string, seqNo int, subject string) error
+	StoreConversation(zid, conID, dispID string, seqNo int, subject string, isEnd bool) error
+	//StoreConversation(zid, conID, dispID string, seqNo int, subject string) error
 	LoadConversations(zid string) ([]Conversation, error)
+	LoadConversation(zid, conID string) (Conversation, error)
 	ArchiveConversation(zid, conversationID string, ended bool) error
 	UnarchiveConversation(zid, conversationID string) error
 	StorePendingNotification(zid string, notif core.Notification) error
@@ -291,20 +294,46 @@ func (s *SQLiteStorage) RemoveMessage(zid, basket, dispID string) error {
 	return nil
 }
 
-func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, subject string) error {
+// StoreConversation stores or updates a conversation and its dispatch.
+func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, subject string, isEnd bool) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback()
-	_, err = tx.Exec(`
-		INSERT OR REPLACE INTO Conversations (con_id, subject, ended)
-		VALUES (?, ?, (SELECT ended FROM Conversations WHERE con_id = ?))
-	`, conID, subject, conID)
+
+	var exists bool
+	err = tx.Get(&exists, "SELECT EXISTS(SELECT 1 FROM Conversations WHERE con_id = ?)", conID)
 	if err != nil {
-		return fmt.Errorf("insert conversation: %w", err)
+		return fmt.Errorf("check conversation exists: %w", err)
 	}
+
+	// fmt.Printf("StoreConversation: conID=%s, dispID=%s, seqNo=%d, subject=%s, isEnd=%v, exists=%v, currentEnded=%v\n",
+	// conID, dispID, seqNo, subject, isEnd, exists, isEnd)
+
+	if !exists {
+		// Insert new conversation
+		_, err = tx.Exec(`
+			INSERT INTO Conversations (con_id, subject, ended)
+			VALUES (?, ?, ?)
+		`, conID, subject, isEnd)
+		if err != nil {
+			return fmt.Errorf("insert conversation: %w", err)
+		}
+	} else {
+		// Update subject and ended status
+		_, err = tx.Exec(`
+			UPDATE Conversations
+			SET ended = ?
+			WHERE con_id = ?
+		`, isEnd, conID)
+		if err != nil {
+			return fmt.Errorf("update conversation: %w", err)
+		}
+	}
+
 	if dispID != "" {
+		// Insert dispatch into conversation
 		_, err = tx.Exec(`
 			INSERT INTO ConversationDispatches (con_id, dispatch_id, seq_no)
 			VALUES (?, ?, ?)
@@ -313,7 +342,77 @@ func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, 
 			return fmt.Errorf("insert conversation dispatch: %w", err)
 		}
 	}
+
 	return tx.Commit()
+}
+
+// func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, subject string) error {
+// 	tx, err := s.db.Beginx()
+// 	if err != nil {
+// 		return fmt.Errorf("begin transaction: %w", err)
+// 	}
+// 	defer tx.Rollback()
+// 	_, err = tx.Exec(`
+// 		INSERT OR REPLACE INTO Conversations (con_id, subject, ended)
+// 		VALUES (?, ?, (SELECT ended FROM Conversations WHERE con_id = ?))
+// 	`, conID, subject, conID)
+// 	if err != nil {
+// 		return fmt.Errorf("insert conversation: %w", err)
+// 	}
+// 	if dispID != "" {
+// 		_, err = tx.Exec(`
+// 			INSERT INTO ConversationDispatches (con_id, dispatch_id, seq_no)
+// 			VALUES (?, ?, ?)
+// 		`, conID, dispID, seqNo)
+// 		if err != nil {
+// 			return fmt.Errorf("insert conversation dispatch: %w", err)
+// 		}
+// 	}
+// 	return tx.Commit()
+// }
+
+// LoadConversation loads a single conversation by con_id for the given zid.
+func (s *SQLiteStorage) LoadConversation(zid, conID string) (Conversation, error) {
+	var conv Conversation
+	err := s.db.Get(&conv, `
+		SELECT con_id, subject, ended
+		FROM Conversations
+		WHERE con_id = ?
+	`, conID)
+	if err == sql.ErrNoRows {
+		// Return an empty Conversation if not found
+		return Conversation{}, nil
+	}
+	if err != nil {
+		return Conversation{}, fmt.Errorf("select conversation %s: %w", conID, err)
+	}
+
+	var dispatches []struct {
+		DispID string `db:"dispatch_id"`
+		SeqNo  int    `db:"seq_no"`
+	}
+	err = s.db.Select(&dispatches, `
+		SELECT dispatch_id, seq_no
+		FROM ConversationDispatches
+		WHERE con_id = ?
+		ORDER BY seq_no
+	`, zid, conID)
+	if err != nil && err != sql.ErrNoRows {
+		return Conversation{}, fmt.Errorf("select dispatches for %s: %w", conID, err)
+	}
+
+	conv.Dispatches = make([]struct {
+		DispID string
+		SeqNo  int
+	}, len(dispatches))
+	for i, d := range dispatches {
+		conv.Dispatches[i] = struct {
+			DispID string
+			SeqNo  int
+		}{d.DispID, d.SeqNo}
+	}
+
+	return conv, nil
 }
 
 func (s *SQLiteStorage) LoadConversations(zid string) ([]Conversation, error) {
@@ -1197,8 +1296,8 @@ func (s *SQLiteStorage) StoreReadReceipt(zid string, notif core.Notification) er
 	}
 
 	// Log notification for verification
-	notifJSON, _ := json.MarshalIndent(notif, "", "  ")
-	fmt.Printf("Verifying read receipt: %s\n", notifJSON)
+	// notifJSON, _ := json.MarshalIndent(notif, "", "  ")
+	// fmt.Printf("Verifying read receipt: %s\n", notifJSON)
 
 	valid, err := core.VerifyNotification(notif, pubKey)
 	if err != nil || !valid {
@@ -1214,21 +1313,21 @@ func (s *SQLiteStorage) StoreReadReceipt(zid string, notif core.Notification) er
 	return nil
 }
 
-func initBaskets(zid string) error {
-	storage, err := NewSQLiteStorage(zid)
-	if err != nil {
-		return fmt.Errorf("initialize storage: %w", err)
-	}
-	basketNames := []string{"in", "out", "pending", "unanswered"}
-	for _, basket := range basketNames {
-		uuids, err := storage.LoadBasket(zid, basket)
-		if err != nil {
-			return fmt.Errorf("load %s basket: %w", basket, err)
-		}
-		if uuids == nil {
-			uuids = []string{}
-		}
-	}
-	fmt.Fprintf(os.Stderr, "Initialized baskets for %s\n", zid)
-	return nil
-}
+// func initBaskets(zid string) error {
+// 	storage, err := NewSQLiteStorage(zid)
+// 	if err != nil {
+// 		return fmt.Errorf("initialize storage: %w", err)
+// 	}
+// 	basketNames := []string{"in", "out", "pending", "unanswered"}
+// 	for _, basket := range basketNames {
+// 		uuids, err := storage.LoadBasket(zid, basket)
+// 		if err != nil {
+// 			return fmt.Errorf("load %s basket: %w", basket, err)
+// 		}
+// 		if uuids == nil {
+// 			uuids = []string{}
+// 		}
+// 	}
+// 	fmt.Fprintf(os.Stderr, "Initialized baskets for %s\n", zid)
+// 	return nil
+// }
