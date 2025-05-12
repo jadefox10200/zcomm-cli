@@ -3,8 +3,10 @@ package main
 
 import (
 	"bufio"
+	"crypto/ed25519"
 	"database/sql"
 	"encoding/base64"
+	"regexp"
 
 	// "encoding/json"
 	"fmt"
@@ -27,7 +29,9 @@ type Storage interface {
 	StoreDispatch(zid string, disp core.Dispatch) error
 	LoadDispatches(zid string) ([]core.Dispatch, error)
 	StoreBasket(zid, basket, dispID string) error
+	LoadBasketDispatches(zid, basket string) ([]core.BasketDispatch, error)
 	LoadBasket(zid, basket string) ([]string, error)
+	// LoadBaskets(zid, basket string) ([]string, error)
 	MoveMessage(zid, fromBasket, toBasket, dispID string) error
 	RemoveMessage(zid, basket, dispID string) error
 	StoreConversation(zid, conID, dispID string, seqNo int, subject string, isEnd bool) error
@@ -41,11 +45,21 @@ type Storage interface {
 	RemovePendingNotification(zid, notifID, notifType string) error
 	StoreReadReceipt(zid string, notif core.Notification) error
 	EndConversation(zid, conversationID string, end bool) error
+	GetDispatch(dispatchID string) (core.Dispatch, error) // Added
+	HandleOutBasketDispatch(zid string, disp core.Dispatch)
+	ViewConversations(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte, archived bool) bool
+
+	AddContact(zid, alias, contactZID, edPub, ecdhPub string) error
+	RemoveContact(zid, alias string) error
+	ListContacts(zid string) ([]Contact, error)
+	ResolveAlias(zid, alias string) (string, error)
+	GetContactPublicKeys(zid, contactZID string) (edPub, ecdhPub string, err error)
 }
 
 type Conversation struct {
-	ConID      string `db:"con_id"`
-	Subject    string `db:"subject"`
+	ConID   string `db:"con_id"`
+	Subject string `db:"subject"`
+	// WithZid    string `db:"with_zid"`
 	Dispatches []struct {
 		DispID string
 		SeqNo  int
@@ -80,7 +94,7 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 		CREATE TABLE IF NOT EXISTS Dispatches (
 			uuid TEXT PRIMARY KEY,
 			from_zid TEXT NOT NULL,
-			to_zids TEXT NOT NULL,
+			to_zid TEXT NOT NULL,
 			subject TEXT NOT NULL,
 			body TEXT NOT NULL,
 			local_nonce TEXT, -- Added for local encryption
@@ -119,9 +133,16 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 			signature TEXT NOT NULL,
 			timestamp INTEGER NOT NULL
 		);
+		CREATE TABLE IF NOT EXISTS Contacts (
+			alias TEXT PRIMARY KEY,
+			zid TEXT NOT NULL UNIQUE,
+			ed_pub TEXT NOT NULL,
+			ecdh_pub TEXT NOT NULL,
+			last_updated INTEGER NOT NULL
+		);
 		CREATE INDEX IF NOT EXISTS idx_dispatches_conversation_id ON Dispatches(conversation_id);
 		CREATE INDEX IF NOT EXISTS idx_dispatches_from_zid ON Dispatches(from_zid);
-		CREATE INDEX IF NOT EXISTS idx_dispatches_to_zids ON Dispatches(to_zids);
+		CREATE INDEX IF NOT EXISTS idx_dispatches_to_zid ON Dispatches(to_zid);
 		CREATE INDEX IF NOT EXISTS idx_conversation_dispatches_con_id ON ConversationDispatches(con_id);
 		CREATE INDEX IF NOT EXISTS idx_baskets_dispatch_id ON Baskets(dispatch_id);
 		CREATE INDEX IF NOT EXISTS idx_conversations_ended ON Conversations(ended);
@@ -165,9 +186,9 @@ func (s *SQLiteStorage) StoreDispatch(zid string, disp core.Dispatch) error {
 	}
 	defer tx.Rollback()
 	_, err = tx.Exec(`
-		INSERT INTO Dispatches (uuid, from_zid, to_zids, subject, body, local_nonce, nonce, ephemeral_pub_key, conversation_id, signature, timestamp, is_end)
+		INSERT INTO Dispatches (uuid, from_zid, to_zid, subject, body, local_nonce, nonce, ephemeral_pub_key, conversation_id, signature, timestamp, is_end)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, disp.UUID, disp.From, strings.Join(disp.To, ","), disp.Subject, disp.Body, disp.LocalNonce, disp.Nonce, disp.EphemeralPubKey, disp.ConversationID, disp.Signature, disp.Timestamp, disp.IsEnd)
+	`, disp.UUID, disp.From, disp.To, disp.Subject, disp.Body, disp.LocalNonce, disp.Nonce, disp.EphemeralPubKey, disp.ConversationID, disp.Signature, disp.Timestamp, disp.IsEnd)
 	if err != nil {
 		return fmt.Errorf("insert dispatch: %w", err)
 	}
@@ -177,7 +198,7 @@ func (s *SQLiteStorage) StoreDispatch(zid string, disp core.Dispatch) error {
 type dispatchRow struct {
 	UUID            string `db:"uuid"`
 	FromZid         string `db:"from_zid"`
-	ToZids          string `db:"to_zids"`
+	ToZid           string `db:"to_zid"`
 	Subject         string `db:"subject"`
 	Body            string `db:"body"`
 	LocalNonce      string `db:"local_nonce"`
@@ -191,9 +212,9 @@ type dispatchRow struct {
 func (s *SQLiteStorage) LoadDispatches(zid string) ([]core.Dispatch, error) {
 	var rows []dispatchRow
 	err := s.db.Select(&rows, `
-		SELECT uuid, from_zid, to_zids, subject, body, local_nonce, nonce, ephemeral_pub_key, conversation_id, timestamp, is_end
+		SELECT uuid, from_zid, to_zid, subject, body, local_nonce, nonce, ephemeral_pub_key, conversation_id, timestamp, is_end
 		FROM Dispatches
-		WHERE from_zid = ? OR to_zids LIKE ?
+		WHERE from_zid = ? OR to_zid LIKE ?
 	`, zid, "%"+zid+"%")
 	if err != nil {
 		return nil, fmt.Errorf("select dispatches: %w", err)
@@ -212,14 +233,10 @@ func (s *SQLiteStorage) LoadDispatches(zid string) ([]core.Dispatch, error) {
 			fmt.Fprintf(os.Stderr, "Skipping dispatch with invalid timestamp: %d, uuid: %s\n", row.Timestamp, row.UUID)
 			continue
 		}
-		var to []string
-		if row.ToZids != "" {
-			to = strings.Split(row.ToZids, ",")
-		}
 		disps = append(disps, core.Dispatch{
 			UUID:            row.UUID,
 			From:            row.FromZid,
-			To:              to,
+			To:              row.ToZid,
 			Subject:         row.Subject,
 			Body:            row.Body,
 			LocalNonce:      row.LocalNonce,
@@ -258,6 +275,20 @@ func (s *SQLiteStorage) LoadBasket(zid, basket string) ([]string, error) {
 		return nil, fmt.Errorf("select basket %s: %w", basket, err)
 	}
 	return uuids, nil
+}
+
+func (s *SQLiteStorage) LoadBasketDispatches(zid, basket string) ([]core.BasketDispatch, error) {
+	var disps []core.BasketDispatch
+	err := s.db.Select(&disps, `
+		SELECT b.dispatch_id, d.to_zid, d.from_zid, d.subject
+		FROM Baskets b
+		left join Dispatches d on d.uuid = b.dispatch_id
+		WHERE basket_name = ?
+	`, basket)
+	if err != nil {
+		return nil, fmt.Errorf("select basket %s: %w", basket, err)
+	}
+	return disps, nil
 }
 
 func (s *SQLiteStorage) MoveMessage(zid, fromBasket, toBasket, dispID string) error {
@@ -346,31 +377,6 @@ func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, 
 	return tx.Commit()
 }
 
-// func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, subject string) error {
-// 	tx, err := s.db.Beginx()
-// 	if err != nil {
-// 		return fmt.Errorf("begin transaction: %w", err)
-// 	}
-// 	defer tx.Rollback()
-// 	_, err = tx.Exec(`
-// 		INSERT OR REPLACE INTO Conversations (con_id, subject, ended)
-// 		VALUES (?, ?, (SELECT ended FROM Conversations WHERE con_id = ?))
-// 	`, conID, subject, conID)
-// 	if err != nil {
-// 		return fmt.Errorf("insert conversation: %w", err)
-// 	}
-// 	if dispID != "" {
-// 		_, err = tx.Exec(`
-// 			INSERT INTO ConversationDispatches (con_id, dispatch_id, seq_no)
-// 			VALUES (?, ?, ?)
-// 		`, conID, dispID, seqNo)
-// 		if err != nil {
-// 			return fmt.Errorf("insert conversation dispatch: %w", err)
-// 		}
-// 	}
-// 	return tx.Commit()
-// }
-
 // LoadConversation loads a single conversation by con_id for the given zid.
 func (s *SQLiteStorage) LoadConversation(zid, conID string) (Conversation, error) {
 	var conv Conversation
@@ -396,7 +402,7 @@ func (s *SQLiteStorage) LoadConversation(zid, conID string) (Conversation, error
 		FROM ConversationDispatches
 		WHERE con_id = ?
 		ORDER BY seq_no
-	`, zid, conID)
+	`, conID)
 	if err != nil && err != sql.ErrNoRows {
 		return Conversation{}, fmt.Errorf("select dispatches for %s: %w", conID, err)
 	}
@@ -546,683 +552,203 @@ func (s *SQLiteStorage) UnarchiveConversation(zid, conversationID string) error 
 	return tx.Commit()
 }
 
-// // viewArchivedConversations displays archived conversations and allows viewing their dispatches
-// func viewArchivedConversations(zid string, ecdhPriv [32]byte) bool {
-// 	storage, err := NewSQLiteStorage(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Initialize storage: %v\n", err)
-// 		return false
-// 	}
-// 	dispatches, err := storage.LoadDispatches(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-// 		return false
-// 	}
+// Define struct for conversation list
+type ConvSummary struct {
+	ConID   string `db:"con_id"`
+	Subject string `db:"subject"`
+	// WithZid string `db:"with_zid"`
+	Ended bool `db:"ended"`
+}
 
-// 	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
-
-// 	for {
-// 		var archivedConvs []Conversation
-// 		err = storage.db.Select(&archivedConvs, `
-// 			SELECT con_id, subject, ended
-// 			FROM ArchivedConversations
-// 		`)
-// 		if err != nil {
-// 			fmt.Fprintf(os.Stderr, "Select archived conversations: %v\n", err)
-// 			return false
-// 		}
-// 		if len(archivedConvs) == 0 {
-// 			fmt.Println("No archived conversations")
-// 			return true
-// 		}
-
-// 		fmt.Println("Archived Conversations:")
-// 		for i, conv := range archivedConvs {
-// 			status := "Active"
-// 			if conv.Ended {
-// 				status = "Ended"
-// 			}
-// 			participant := "Unknown"
-// 			var latestDisp core.Dispatch
-// 			maxSeqNo := -1
-// 			var convDispatches []struct {
-// 				DispID string `db:"dispatch_id"`
-// 				SeqNo  int    `db:"seq_no"`
-// 			}
-// 			err := storage.db.Select(&convDispatches, `
-// 				SELECT dispatch_id, seq_no
-// 				FROM ConversationDispatches
-// 				WHERE con_id = ?
-// 				ORDER BY seq_no
-// 			`, conv.ConID)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conv.ConID, err)
-// 				continue
-// 			}
-// 			for _, entry := range convDispatches {
-// 				if entry.SeqNo > maxSeqNo {
-// 					maxSeqNo = entry.SeqNo
-// 					for _, disp := range dispatches {
-// 						if disp.UUID == entry.DispID {
-// 							latestDisp = disp
-// 							break
-// 						}
-// 					}
-// 				}
-// 			}
-// 			if latestDisp.UUID != "" {
-// 				if latestDisp.From == zid {
-// 					if len(latestDisp.To) > 0 {
-// 						participant = latestDisp.To[0]
-// 					}
-// 				} else {
-// 					participant = latestDisp.From
-// 				}
-// 			}
-// 			fmt.Printf("%d. Subject: %s (With: %s, Status: %s)\n", i+1, conv.Subject, participant, status)
-// 		}
-
-// 		fmt.Print("Enter conversation number to view (0 to exit): ")
-// 		reader := bufio.NewReader(os.Stdin)
-// 		choice, _ := reader.ReadString('\n')
-// 		choice = strings.TrimSpace(choice)
-// 		num, err := strconv.Atoi(choice)
-// 		if err != nil || num < 0 || num > len(archivedConvs) {
-// 			fmt.Println("Invalid choice")
-// 			continue
-// 		}
-// 		if num == 0 {
-// 			return false
-// 		}
-
-// 		conv := archivedConvs[num-1]
-// 		status := "Active"
-// 		if conv.Ended {
-// 			status = "Ended"
-// 		}
-// 		fmt.Printf("\nViewing conversation: %s (Status: %s)\n", conv.Subject, status)
-
-// 		var convDispatches []struct {
-// 			DispID string `db:"dispatch_id"`
-// 			SeqNo  int    `db:"seq_no"`
-// 		}
-// 		err = storage.db.Select(&convDispatches, `
-// 			SELECT dispatch_id, seq_no
-// 			FROM ConversationDispatches
-// 			WHERE con_id = ?
-// 			ORDER BY seq_no
-// 		`, conv.ConID)
-// 		if err != nil {
-// 			fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conv.ConID, err)
-// 			continue
-// 		}
-
-// 		if len(convDispatches) == 0 {
-// 			fmt.Println("No dispatches found for this conversation")
-// 			fmt.Println()
-// 			continue
-// 		}
-
-// 		fmt.Println("Dispatches:")
-// 		for _, cd := range convDispatches {
-// 			var disp core.Dispatch
-// 			for _, d := range dispatches {
-// 				if d.UUID == cd.DispID {
-// 					disp = d
-// 					break
-// 				}
-// 			}
-// 			if disp.UUID == "" {
-// 				fmt.Printf("Dispatch %s not found\n", cd.DispID)
-// 				continue
-// 			}
-// 			fmt.Printf("Dispatch ID: %s\n", disp.UUID)
-// 			fmt.Printf("From: %s\n", disp.From)
-// 			fmt.Printf("To: %s\n", strings.Join(disp.To, ", "))
-// 			fmt.Printf("Subject: %s\n", disp.Subject)
-
-// 			// Decrypt using local key if LocalNonce exists
-// 			if disp.LocalNonce != "" {
-// 				ciphertext, err := base64.StdEncoding.DecodeString(disp.Body)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (failed to decode body: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				nonce, err := base64.StdEncoding.DecodeString(disp.LocalNonce)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (failed to decode local nonce: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				plaintext, err := core.DecryptAESGCM(localKey[:], nonce, ciphertext)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (local decryption failed: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				fmt.Printf("Body: %s\n", plaintext)
-// 			} else {
-// 				// Legacy data: attempt transmission decryption or display as-is
-// 				if disp.Nonce != "" && disp.EphemeralPubKey != "" {
-// 					err := decryptDispatch(&disp, ecdhPriv)
-// 					if err != nil {
-// 						fmt.Printf("Body: %s (transmission decryption failed: %v)\n", disp.Body, err)
-// 					} else {
-// 						fmt.Printf("Body: %s\n", disp.Body)
-// 					}
-// 				} else {
-// 					fmt.Printf("Body: %s (unencrypted)\n", disp.Body)
-// 				}
-// 			}
-
-// 			fmt.Printf("Timestamp: %s\n", time.Unix(disp.Timestamp, 0).Format(time.RFC1123))
-// 			fmt.Println("---")
-// 		}
-// 		fmt.Println()
-// 	}
-// }
-
-// // viewConversations displays all active conversations.
-// func viewConversations(zid string) {
-// 	convs, err := storage.LoadConversations(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Load conversations: %v\n", err)
-// 		return
-// 	}
-// 	if len(convs) == 0 {
-// 		fmt.Println("No conversations")
-// 		return
-// 	}
-
-// 	dispatches, err := storage.LoadDispatches(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-// 		return
-// 	}
-
-// 	type convEntry struct {
-// 		ConID      string
-// 		Subject    string
-// 		Dispatches []struct {
-// 			DispID string
-// 			SeqNo  int
-// 		}
-// 		Ended bool
-// 	}
-// 	convList := make([]convEntry, 0, len(convs))
-// 	for _, conv := range convs {
-// 		convList = append(convList, convEntry{
-// 			ConID:      conv.ConID,
-// 			Subject:    conv.Subject,
-// 			Dispatches: conv.Dispatches,
-// 			Ended:      conv.Ended,
-// 		})
-// 	}
-
-// 	if len(convList) == 0 {
-// 		fmt.Println("No active conversations")
-// 		return
-// 	}
-
-// 	for i, conv := range convList {
-// 		fmt.Printf("\n%d. Subject: %s (ID: %s)\n", i+1, conv.Subject, conv.ConID)
-// 		entries := conv.Dispatches
-// 		sort.Slice(entries, func(i, j int) bool {
-// 			return entries[i].SeqNo < entries[j].SeqNo
-// 		})
-// 		for _, entry := range entries {
-// 			for _, disp := range dispatches {
-// 				if disp.UUID == entry.DispID {
-// 					fmt.Printf("    %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
-// 				}
-// 			}
-// 		}
-// 	}
-
-// 	reader := bufio.NewReader(os.Stdin)
-// 	fmt.Print("Select conversation number (0 to exit): ")
-// 	input, _ := reader.ReadString('\n')
-// 	input = strings.TrimSpace(input)
-// 	if input == "" || input == "0" {
-// 		return
-// 	}
-
-// 	num, err := strconv.Atoi(input)
-// 	if err != nil || num < 1 || num > len(convList) {
-// 		fmt.Println("Invalid selection")
-// 		return
-// 	}
-
-// 	selectedConv := convList[num-1]
-// 	fmt.Println("\nConversation Thread:")
-// 	entries := selectedConv.Dispatches
-// 	sort.Slice(entries, func(i, j int) bool {
-// 		return entries[i].SeqNo < entries[j].SeqNo
-// 	})
-// 	for _, entry := range entries {
-// 		for _, disp := range dispatches {
-// 			if disp.UUID == entry.DispID {
-// 				fmt.Printf("  %d. From: %s, Subject: %s, Time: %s\n", entry.SeqNo, disp.From, disp.Subject, time.Unix(disp.Timestamp, 0).Format(time.RFC3339))
-// 			}
-// 		}
-// 	}
-// 	fmt.Print("Press Enter to continue...")
-// 	reader.ReadString('\n')
-// }
-
-// viewConversations displays either active or archived conversations based on the archived flag.
-// If archived=true, it queries ArchivedConversations; if archived=false, it queries Conversations.
-// Displays full conversation details, including decrypted dispatch bodies, for the selected conversation.
-// func viewConversations(zid string, ecdhPriv [32]byte, archived bool) bool {
-// 	storage, err := NewSQLiteStorage(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Initialize storage: %v\n", err)
-// 		return false
-// 	}
-// 	dispatches, err := storage.LoadDispatches(zid)
-// 	if err != nil {
-// 		fmt.Fprintf(os.Stderr, "Load dispatches: %v\n", err)
-// 		return false
-// 	}
-
-// 	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
-
-// 	for {
-// 		var convs []Conversation
-// 		if archived {
-// 			// Query archived conversations
-// 			err = storage.db.Select(&convs, `
-//                 SELECT con_id, subject, ended
-//                 FROM ArchivedConversations
-//             `)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Select archived conversations: %v\n", err)
-// 				return false
-// 			}
-// 		} else {
-// 			// Query active conversations
-// 			convs, err = storage.LoadConversations(zid)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Select active conversations: %v\n", err)
-// 				return false
-// 			}
-// 		}
-
-// 		if len(convs) == 0 {
-// 			if archived {
-// 				fmt.Println("No archived conversations")
-// 			} else {
-// 				fmt.Println("No active conversations")
-// 			}
-// 			return true
-// 		}
-
-// 		fmt.Println()
-// 		if archived {
-// 			fmt.Println("Archived Conversations:")
-// 		} else {
-// 			fmt.Println("Active Conversations:")
-// 		}
-// 		for i, conv := range convs {
-// 			status := "Active"
-// 			if conv.Ended {
-// 				status = "Ended"
-// 			}
-// 			participant := "Unknown"
-// 			var latestDisp core.Dispatch
-// 			maxSeqNo := -1
-// 			var convDispatches []struct {
-// 				DispID string `db:"dispatch_id"`
-// 				SeqNo  int    `db:"seq_no"`
-// 			}
-// 			err := storage.db.Select(&convDispatches, `
-//                 SELECT dispatch_id, seq_no
-//                 FROM ConversationDispatches
-//                 WHERE con_id = ?
-//                 ORDER BY seq_no
-//             `, conv.ConID)
-// 			if err != nil {
-// 				fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conv.ConID, err)
-// 				continue
-// 			}
-// 			for _, entry := range convDispatches {
-// 				if entry.SeqNo > maxSeqNo {
-// 					maxSeqNo = entry.SeqNo
-// 					for _, disp := range dispatches {
-// 						if disp.UUID == entry.DispID {
-// 							latestDisp = disp
-// 							break
-// 						}
-// 					}
-// 				}
-// 			}
-// 			if latestDisp.UUID != "" {
-// 				if latestDisp.From == zid {
-// 					if len(latestDisp.To) > 0 {
-// 						participant = latestDisp.To[0]
-// 					}
-// 				} else {
-// 					participant = latestDisp.From
-// 				}
-// 			}
-// 			fmt.Printf("%d. Subject: %s (With: %s, Status: %s)\n", i+1, conv.Subject, participant, status)
-// 		}
-
-// 		fmt.Print("Enter conversation number to view (0 to exit): ")
-// 		reader := bufio.NewReader(os.Stdin)
-// 		choice, _ := reader.ReadString('\n')
-// 		choice = strings.TrimSpace(choice)
-// 		num, err := strconv.Atoi(choice)
-// 		if err != nil || num < 0 || num > len(convs) {
-// 			fmt.Println("Invalid choice")
-// 			continue
-// 		}
-// 		if num == 0 {
-// 			return false
-// 		}
-
-// 		conv := convs[num-1]
-// 		status := "Active"
-// 		if conv.Ended {
-// 			status = "Ended"
-// 		}
-// 		fmt.Printf("\nViewing conversation: %s (Status: %s)\n", conv.Subject, status)
-
-// 		var convDispatches []struct {
-// 			DispID string `db:"dispatch_id"`
-// 			SeqNo  int    `db:"seq_no"`
-// 		}
-// 		err = storage.db.Select(&convDispatches, `
-//             SELECT dispatch_id, seq_no
-//             FROM ConversationDispatches
-//             WHERE con_id = ?
-//             ORDER BY seq_no
-//         `, conv.ConID)
-// 		if err != nil {
-// 			fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conv.ConID, err)
-// 			continue
-// 		}
-
-// 		if len(convDispatches) == 0 {
-// 			fmt.Println("No dispatches found for this conversation")
-// 			fmt.Println()
-// 			continue
-// 		}
-
-// 		fmt.Println("Dispatches:")
-// 		for _, cd := range convDispatches {
-// 			var disp core.Dispatch
-// 			for _, d := range dispatches {
-// 				if d.UUID == cd.DispID {
-// 					disp = d
-// 					break
-// 				}
-// 			}
-// 			if disp.UUID == "" {
-// 				fmt.Printf("Dispatch %s not found\n", cd.DispID)
-// 				continue
-// 			}
-// 			fmt.Printf("Dispatch ID: %s\n", disp.UUID)
-// 			fmt.Printf("From: %s\n", disp.From)
-// 			fmt.Printf("To: %s\n", strings.Join(disp.To, ", "))
-// 			fmt.Printf("Subject: %s\n", disp.Subject)
-
-// 			// Decrypt using local key if LocalNonce exists
-// 			if disp.LocalNonce != "" {
-// 				ciphertext, err := base64.StdEncoding.DecodeString(disp.Body)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (failed to decode body: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				nonce, err := base64.StdEncoding.DecodeString(disp.LocalNonce)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (failed to decode local nonce: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				plaintext, err := core.DecryptAESGCM(localKey[:], nonce, ciphertext)
-// 				if err != nil {
-// 					fmt.Printf("Body: %s (local decryption failed: %v)\n", disp.Body, err)
-// 					continue
-// 				}
-// 				fmt.Printf("Body: %s\n", plaintext)
-// 			} else {
-// 				//decrypt senders dispatch
-// 				if disp.Nonce != "" && disp.EphemeralPubKey != "" {
-// 					err := decryptDispatch(&disp, ecdhPriv)
-// 					if err != nil {
-// 						fmt.Printf("Body: %s (transmission decryption failed: %v)\n", disp.Body, err)
-// 					} else {
-// 						fmt.Printf("Body: %s\n", disp.Body)
-// 					}
-// 				} else {
-// 					fmt.Printf("Body: %s (unencrypted)\n", disp.Body)
-// 				}
-// 			}
-
-// 			fmt.Printf("Timestamp: %s\n", time.Unix(disp.Timestamp, 0).Format(time.RFC1123))
-// 			fmt.Println("---")
-// 		}
-// 		fmt.Println()
-// 	}
-// }
-
-// viewConversations displays either active or archived conversations based on the archived flag.
-// Uses a Conversations table with an ended column, with a JOIN and MAX(timestamp) for the summary view.
-// viewConversations displays either active or archived conversations based on the archived flag.
-// Uses a Conversations table with an ended column, with a CTE for the summary view to avoid aggregate misuse.
-func viewConversations(zid string, ecdhPriv [32]byte, archived bool) bool {
-	storage, err := NewSQLiteStorage(zid)
+// viewConversations lists active or archived conversations and prompts to view one
+func (s *SQLiteStorage) ViewConversations(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte, archived bool) bool {
+	// Query conversations
+	endedVal := 0
+	if archived {
+		endedVal = 1
+	}
+	var convList []ConvSummary
+	err := s.db.Select(&convList, `
+		SELECT con_id, subject, ended
+		FROM Conversations
+		WHERE ended = ?
+		ORDER BY con_id
+	`, endedVal)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Initialize storage: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Select conversations (ended=%d): %v\n", endedVal, err)
 		return false
 	}
 
-	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
-
-	for {
-		// Define struct for summary view
-		type ConvSummary struct {
-			ConID        string `db:"con_id"`
-			Subject      string `db:"subject"`
-			Ended        bool   `db:"ended"`
-			MaxTimestamp int64  `db:"max_timestamp"`
-			Participant  string `db:"participant"`
-		}
-
-		var convList []ConvSummary
-		endedVal := 0
+	// Display conversations
+	if len(convList) == 0 {
 		if archived {
-			endedVal = 1
-		}
-
-		// Summary query with CTE to find the latest dispatch
-		query := `
-            SELECT 
-                c.con_id,
-                c.subject,
-                c.ended,
-                COALESCE(d.timestamp, 0) AS max_timestamp,
-                COALESCE(
-                    CASE 
-                        WHEN d.from_zid = ? THEN (
-                            TRIM(SUBSTR(d.to_zids, 1, INSTR(d.to_zids || ',', ',') - 1))
-                        )
-                        ELSE d.from_zid 
-                    END, 'Unknown'
-                ) AS participant
-            FROM Conversations c
-            LEFT JOIN (
-                SELECT 
-                    cd.con_id,
-                    d.from_zid,
-                    d.to_zids,
-                    d.timestamp
-                FROM ConversationDispatches cd
-                JOIN Dispatches d ON cd.dispatch_id = d.uuid
-                WHERE cd.dispatch_id IN (
-                    SELECT cd2.dispatch_id
-                    FROM ConversationDispatches cd2
-                    JOIN Dispatches d2 ON cd2.dispatch_id = d2.uuid
-                    WHERE cd2.con_id = cd.con_id
-                    ORDER BY d2.timestamp DESC
-                    LIMIT 1
-                )
-            ) d ON c.con_id = d.con_id
-            WHERE c.ended = ?
-            ORDER BY max_timestamp DESC
-        `
-
-		err = storage.db.Select(&convList, query, zid, endedVal)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Select conversations (ended=%d): %v\n", endedVal, err)
-			return false
-		}
-
-		if len(convList) == 0 {
-			if archived {
-				fmt.Println("No archived conversations")
-			} else {
-				fmt.Println("No active conversations")
-			}
-			return true
-		}
-
-		fmt.Println()
-		if archived {
-			fmt.Println("Archived Conversations:")
+			fmt.Println("No archived conversations")
 		} else {
-			fmt.Println("Active Conversations:")
+			fmt.Println("No active conversations")
 		}
-		for i, conv := range convList {
-			status := "Active"
-			if conv.Ended {
-				status = "Ended"
-			}
-			fmt.Printf("%d. Subject: %s (With: %s, Status: %s)\n", i+1, conv.Subject, conv.Participant, status)
-		}
+		return true
+	}
 
-		fmt.Print("Enter conversation number to view (0 to exit): ")
-		reader := bufio.NewReader(os.Stdin)
-		choice, _ := reader.ReadString('\n')
-		choice = strings.TrimSpace(choice)
-		num, err := strconv.Atoi(choice)
-		if err != nil || num < 0 || num > len(convList) {
-			fmt.Println("Invalid choice")
-			continue
-		}
-		if num == 0 {
-			return false
-		}
-
-		conv := convList[num-1]
+	fmt.Println()
+	if archived {
+		fmt.Println("Archived Conversations:")
+	} else {
+		fmt.Println("Active Conversations:")
+	}
+	for i, conv := range convList {
 		status := "Active"
 		if conv.Ended {
 			status = "Ended"
 		}
-		fmt.Printf("\nViewing conversation: %s (Status: %s)\n", conv.Subject, status)
+		fmt.Printf("%d. Subject: %s (Status: %s)\n", i+1, conv.Subject, status)
+	}
 
-		// Fetch detailed dispatches for the selected conversation
-		type ConvDisplay struct {
-			DispatchID      string `db:"dispatch_id"`
-			SeqNo           int    `db:"seq_no"`
-			FromID          string `db:"from_zid"`
-			ToIDs           string `db:"to_zids"`
-			DispSubject     string `db:"disp_subject"`
-			Body            string `db:"body"`
-			Nonce           string `db:"nonce"`
-			LocalNonce      string `db:"local_nonce"`
-			Timestamp       int64  `db:"timestamp"`
-			Signature       string `db:"signature"`
-			EphemeralPubKey string `db:"ephemeral_pub_key"`
-			IsEnd           bool   `db:"is_end"`
-		}
+	// Prompt for selection
+	fmt.Print("Enter conversation number to view (0 to exit): ")
+	reader := bufio.NewReader(os.Stdin)
+	choice, _ := reader.ReadString('\n')
+	choice = strings.TrimSpace(choice)
+	num, err := strconv.Atoi(choice)
+	if err != nil || num < 0 || num > len(convList) {
+		fmt.Println("Invalid choice")
+		return true // Stay in viewConversations
+	}
+	if num == 0 {
+		return false // Exit to main menu
+	}
 
-		var dispatches []ConvDisplay
-		err = storage.db.Select(&dispatches, `
-            SELECT 
-                cd.dispatch_id,
-                cd.seq_no,
-                d.from_zid,
-                d.to_zids,
-                d.subject AS disp_subject,
-                d.body,
-                d.nonce,
-                d.local_nonce,
-                d.timestamp,
-                d.ephemeral_pub_key,
-                d.is_end
-            FROM ConversationDispatches cd
-            JOIN Dispatches d ON cd.dispatch_id = d.uuid
-            WHERE cd.con_id = ?
-            ORDER BY cd.seq_no
-        `, conv.ConID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conv.ConID, err)
-			continue
-		}
+	// View selected conversation
+	conv := convList[num-1]
+	return viewConversation(zid, edPriv, ecdhPriv, s, conv.ConID, conv.Subject, encryptionKey, conv.Ended)
+}
 
-		if len(dispatches) == 0 {
-			fmt.Println("No dispatches found for this conversation")
-			fmt.Println()
-			continue
-		}
+// viewConversation displays dispatches for a conversation and offers actions
+func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, storage *SQLiteStorage, conID string, subject string, encryptionKey []byte, ended bool) bool {
+	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
 
+	// Fetch dispatches
+	type ConvDisplay struct {
+		DispatchID string `db:"dispatch_id"`
+		SeqNo      int    `db:"seq_no"`
+		FromZID    string `db:"from_zid"`
+		ToZID      string `db:"to_zid"`
+		Subject    string `db:"subject"`
+		Body       string `db:"body"`
+		LocalNonce string `db:"local_nonce"`
+		Nonce      string `db:"nonce"`
+		Timestamp  int64  `db:"timestamp"`
+		IsEnd      bool   `db:"is_end"`
+	}
+
+	var dispatches []ConvDisplay
+	err := storage.db.Select(&dispatches, `
+		SELECT 
+			cd.dispatch_id,
+			cd.seq_no,
+			d.from_zid,
+			d.to_zid,
+			d.subject,
+			d.body,
+			d.local_nonce,
+			d.nonce,
+			d.timestamp,
+			d.is_end
+		FROM ConversationDispatches cd
+		JOIN Dispatches d ON cd.dispatch_id = d.uuid
+		WHERE cd.con_id = ?
+		ORDER BY cd.seq_no
+	`, conID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Select dispatches for %s: %v\n", conID, err)
+		return true // Return to viewConversations
+	}
+
+	// Display conversation
+	status := "Active"
+	if ended {
+		status = "Ended"
+	}
+	fmt.Printf("\nViewing conversation: %s (Status: %s)\n", subject, status)
+
+	if len(dispatches) == 0 {
+		fmt.Println("No dispatches found for this conversation")
+	} else {
 		fmt.Println("Dispatches:")
 		for _, cd := range dispatches {
-			disp := core.Dispatch{
-				UUID:            cd.DispatchID,
-				From:            cd.FromID,
-				To:              strings.Split(cd.ToIDs, ","), // Assuming to_ids is comma-separated
-				Subject:         cd.DispSubject,
-				Body:            cd.Body,
-				Nonce:           cd.Nonce,
-				LocalNonce:      cd.LocalNonce,
-				Timestamp:       cd.Timestamp,
-				ConversationID:  conv.ConID,
-				Signature:       cd.Signature,
-				EphemeralPubKey: cd.EphemeralPubKey,
-				IsEnd:           cd.IsEnd,
+			// Resolve sender alias
+			sender := cd.FromZID
+			if alias, err := storage.ResolveAlias(zid, cd.FromZID); err == nil {
+				sender = alias
 			}
 
-			fmt.Printf("Dispatch ID: %s\n", disp.UUID)
-			fmt.Printf("From: %s\n", disp.From)
-			fmt.Printf("To: %s\n", strings.Join(disp.To, ", "))
-			fmt.Printf("Subject: %s\n", disp.Subject)
+			fmt.Printf("Dispatch ID: %s\n", cd.DispatchID)
+			fmt.Printf("From: %s\n", sender)
+			fmt.Printf("To: %s\n", cd.ToZID)
+			fmt.Printf("Subject: %s\n", cd.Subject)
 
-			// Decrypt using local key if LocalNonce exists
-			if disp.LocalNonce != "" {
-				ciphertext, err := base64.StdEncoding.DecodeString(disp.Body)
+			// Decrypt body if local_nonce exists
+			if cd.LocalNonce != "" {
+				ciphertext, err := base64.StdEncoding.DecodeString(cd.Body)
 				if err != nil {
-					fmt.Printf("Body: %s (failed to decode body: %v)\n", disp.Body, err)
+					fmt.Printf("Body: %s (failed to decode body: %v)\n", cd.Body, err)
 					continue
 				}
-				nonce, err := base64.StdEncoding.DecodeString(disp.LocalNonce)
+				nonce, err := base64.StdEncoding.DecodeString(cd.LocalNonce)
 				if err != nil {
-					fmt.Printf("Body: %s (failed to decode local nonce: %v)\n", disp.Body, err)
+					fmt.Printf("Body: %s (failed to decode local nonce: %v)\n", cd.Body, err)
 					continue
 				}
 				plaintext, err := core.DecryptAESGCM(localKey[:], nonce, ciphertext)
 				if err != nil {
-					fmt.Printf("Body: %s (local decryption failed: %v)\n", disp.Body, err)
+					fmt.Printf("Body: %s (local decryption failed: %v)\n", cd.Body, err)
 					continue
 				}
 				fmt.Printf("Body: %s\n", plaintext)
 			} else {
-				// Legacy data: attempt transmission decryption or display as-is
-				if disp.Nonce != "" && disp.EphemeralPubKey != "" {
-					err := decryptDispatch(&disp, ecdhPriv)
-					if err != nil {
-						fmt.Printf("Body: %s (transmission decryption failed: %v)\n", disp.Body, err)
-					} else {
-						fmt.Printf("Body: %s\n", disp.Body)
-					}
-				} else {
-					fmt.Printf("Body: %s (unencrypted)\n", disp.Body)
-				}
+				fmt.Printf("Body: %s (unencrypted)\n", cd.Body)
 			}
 
-			fmt.Printf("Timestamp: %s\n", time.Unix(disp.Timestamp, 0).Format(time.RFC1123))
+			fmt.Printf("Timestamp: %s\n", time.Unix(cd.Timestamp, 0).Format(time.RFC1123))
 			fmt.Println("---")
 		}
-		fmt.Println()
+	}
+
+	// Prompt for actions
+	for {
+		fmt.Println("\nOptions:")
+		if ended {
+			fmt.Println("1. Unarchive")
+		} else {
+			fmt.Println("1. Archive")
+		}
+		fmt.Println("2. Exit")
+		fmt.Print("Select an option: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		choice, _ := reader.ReadString('\n')
+		choice = strings.TrimSpace(choice)
+
+		switch choice {
+		case "1":
+			newEnded := !ended
+			err = storage.StoreConversation(zid, conID, "", 0, subject, newEnded)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Update conversation %s: %v\n", conID, err)
+				continue
+			}
+			action := "Archived"
+			if !newEnded {
+				action = "Unarchived"
+			}
+			fmt.Printf("Conversation %s\n", action)
+			return true // Refresh conversation list
+
+		case "2":
+			return true // Return to viewConversations
+
+		default:
+			fmt.Println("Invalid option")
+		}
 	}
 }
 
@@ -1313,21 +839,240 @@ func (s *SQLiteStorage) StoreReadReceipt(zid string, notif core.Notification) er
 	return nil
 }
 
-// func initBaskets(zid string) error {
-// 	storage, err := NewSQLiteStorage(zid)
-// 	if err != nil {
-// 		return fmt.Errorf("initialize storage: %w", err)
-// 	}
-// 	basketNames := []string{"in", "out", "pending", "unanswered"}
-// 	for _, basket := range basketNames {
-// 		uuids, err := storage.LoadBasket(zid, basket)
-// 		if err != nil {
-// 			return fmt.Errorf("load %s basket: %w", basket, err)
-// 		}
-// 		if uuids == nil {
-// 			uuids = []string{}
-// 		}
-// 	}
-// 	fmt.Fprintf(os.Stderr, "Initialized baskets for %s\n", zid)
-// 	return nil
-// }
+// Contact represents a contact entry
+type Contact struct {
+	Alias       string `db:"alias"`
+	ZID         string `db:"zid"`
+	EdPub       string `db:"ed_pub"`
+	EcdhPub     string `db:"ecdh_pub"`
+	LastUpdated int64  `db:"last_updated"`
+}
+
+// RemoveContact deletes a contact by alias
+func (s *SQLiteStorage) RemoveContact(zid, alias string) error {
+	alias = strings.ToLower(alias)
+	_, err := s.db.Exec(`
+		DELETE FROM Contacts WHERE alias = ?
+	`, alias)
+	if err != nil {
+		return fmt.Errorf("delete contact: %w", err)
+	}
+	return nil
+}
+
+// ListContacts retrieves all contacts
+func (s *SQLiteStorage) ListContacts(zid string) ([]Contact, error) {
+	var contacts []Contact
+	err := s.db.Select(&contacts, `
+		SELECT alias, zid, ed_pub, ecdh_pub, last_updated
+		FROM Contacts
+		ORDER BY alias
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list contacts: %w", err)
+	}
+	return contacts, nil
+}
+
+// ResolveAlias maps an alias to a ZID
+// ResolveAlias checks if the input is a ZID or an alias. If it's a ZID, returns it directly.
+// If it's an alias, queries the Contacts table to resolve it to a ZID.
+// If input == 0, we assume a user is trying to exit rather than resolve. The string "0" is returned with an error.
+func (s *SQLiteStorage) ResolveAlias(zid, input string) (string, error) {
+	if input == "0" {
+		return "0", fmt.Errorf("user entered 0")
+	}
+	// Define ZID pattern: starts with alphanumeric, followed by alphanumeric, hyphens, or underscores, min 3 chars
+	zidPattern := regexp.MustCompile(`^z[0-9]{9,}$`)
+
+	if zidPattern.MatchString(input) {
+		// Input matches ZID pattern, return it directly
+		// fmt.Printf("regex z pattern matched: Sending back %s\n", input)
+		return input, nil
+	}
+
+	input = strings.ToLower(input)
+	// Input is treated as an alias, query Contacts table
+	var contactZID string
+	err := s.db.Get(&contactZID, `
+		SELECT zid FROM Contacts WHERE alias = ?
+	`, input)
+	if err != nil {
+		return "", fmt.Errorf("resolve alias %q: %w", input, err)
+	}
+
+	// fmt.Printf("Using %s to send\n", contactZID)
+
+	return contactZID, nil
+}
+
+// GetContactPublicKeys retrieves public keys for a ZID
+func (s *SQLiteStorage) GetContactPublicKeys(zid, contactZID string) (edPub, ecdhPub string, err error) {
+	var contact Contact
+	err = s.db.Get(&contact, `
+		SELECT ed_pub, ecdh_pub FROM Contacts WHERE zid = ?
+	`, contactZID)
+	if err != nil {
+		return "", "", fmt.Errorf("get contact public keys: %w", err)
+	}
+	return contact.EdPub, contact.EcdhPub, nil
+}
+
+// AddContact stores a new contact with alias, ZID, and public keys
+func (s *SQLiteStorage) AddContact(zid, alias, contactZID, edPub, ecdhPub string) error {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	alias = strings.ToLower(alias)
+	_, err = tx.Exec(`
+		INSERT INTO Contacts (alias, zid, ed_pub, ecdh_pub, last_updated)
+		VALUES (?, ?, ?, ?, ?)
+	`, alias, contactZID, edPub, ecdhPub, time.Now().Unix())
+	if err != nil {
+		return fmt.Errorf("insert contact: %w", err)
+	}
+
+	return tx.Commit()
+}
+
+// GetDispatch retrieves a dispatch by its UUID from the Dispatches table
+func (s *SQLiteStorage) GetDispatch(dispatchID string) (core.Dispatch, error) {
+	var disp core.Dispatch
+	err := s.db.Get(&disp, `
+		SELECT uuid, conversation_id, from_zid, to_zid, subject, body, local_nonce, is_end
+		FROM Dispatches
+		WHERE uuid = ?
+	`, dispatchID)
+	if err != nil {
+		return core.Dispatch{}, fmt.Errorf("get dispatch %s: %w", dispatchID, err)
+	}
+	return disp, nil
+}
+
+// HandleOutBasketDispatch handles a dispatch in the "out" basket, providing a pullback option.
+func (s *SQLiteStorage) HandleOutBasketDispatch(zid string, disp core.Dispatch) {
+	// fmt.Printf("Dispatch: To: %s, Subject: %s, Body: %s\n", disp.To, disp.Subject, disp.Body)
+	fmt.Print("Options: [1] Pullback, [0] Exit: ")
+	var choice int
+	_, err := fmt.Scanln(&choice)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Read choice: %v\n", err)
+		return
+	}
+
+	if choice == 0 {
+		return
+	}
+	if choice != 1 {
+		fmt.Println("Invalid option")
+		return
+	}
+
+	// Perform pullback operation
+	if err := s.pullBack(zid, disp); err != nil {
+		fmt.Fprintf(os.Stderr, "Pullback dispatch %s: %v\n", disp.UUID, err)
+		return
+	}
+}
+
+// pullBack performs the pullback operation for a dispatch in the "out" basket.
+// STILL NEED TO IMPLEMENT GETTING IT BACK FROM THE SERVER
+// pullBack performs the pullback operation for a dispatch in the "out" basket.
+func (s *SQLiteStorage) pullBack(zid string, disp core.Dispatch) error {
+	tx, err := s.db.Beginx()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Check seq_no in ConversationDispatches
+	var seqNo int
+	err = tx.Get(&seqNo, `
+		SELECT seq_no
+		FROM ConversationDispatches
+		WHERE dispatch_id = ?
+	`, disp.UUID)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("dispatch %s not found in ConversationDispatches", disp.UUID)
+	}
+	if err != nil {
+		return fmt.Errorf("get seq_no for dispatch %s: %w", disp.UUID, err)
+	}
+
+	// Remove dispatch from out basket
+	_, err = tx.Exec(`
+		DELETE FROM Baskets
+		WHERE basket_name = ? AND dispatch_id = ?
+	`, "out", disp.UUID)
+	if err != nil {
+		return fmt.Errorf("remove dispatch %s from out basket: %w", disp.UUID, err)
+	}
+
+	// Remove dispatch from ConversationDispatches
+	_, err = tx.Exec(`
+		DELETE FROM ConversationDispatches
+		WHERE dispatch_id = ?
+	`, disp.UUID)
+	if err != nil {
+		return fmt.Errorf("remove dispatch %s from ConversationDispatches: %w", disp.UUID, err)
+	}
+
+	if seqNo == 1 {
+		// Archive conversation if seq_no == 1
+		var conv Conversation
+		err = tx.Get(&conv, `
+			SELECT con_id, subject, ended
+			FROM Conversations
+			WHERE con_id = ?
+		`, disp.ConversationID)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("conversation %s not found", disp.ConversationID)
+		}
+		if err != nil {
+			return fmt.Errorf("select conversation %s: %w", disp.ConversationID, err)
+		}
+
+		_, err = tx.Exec(`
+			UPDATE Conversations
+			SET ended = ?
+			WHERE con_id = ?
+		`, true, disp.ConversationID)
+		if err != nil {
+			return fmt.Errorf("archive conversation %s: %w", disp.ConversationID, err)
+		}
+		fmt.Printf("Dispatch %s pulled back, conversation %s archived\n", disp.UUID, disp.ConversationID)
+	} else {
+		// Find the previous dispatch (seq_no - 1) to move back to pending
+		var prevDispatchID string
+		err = tx.Get(&prevDispatchID, `
+			SELECT dispatch_id
+			FROM ConversationDispatches
+			WHERE con_id = ? AND seq_no = ?
+		`, disp.ConversationID, seqNo-1)
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("previous dispatch for seq_no %d not found", seqNo-1)
+		}
+		if err != nil {
+			return fmt.Errorf("get previous dispatch for seq_no %d: %w", seqNo-1, err)
+		}
+
+		// Move previous dispatch to pending basket
+		_, err = tx.Exec(`
+			INSERT OR REPLACE INTO Baskets (basket_name, dispatch_id)
+			VALUES (?, ?)
+		`, "pending", prevDispatchID)
+		if err != nil {
+			return fmt.Errorf("move dispatch %s to pending basket: %w", prevDispatchID, err)
+		}
+		fmt.Printf("Dispatch %s pulled back, previous dispatch %s moved to pending\n", disp.UUID, prevDispatchID)
+	}
+
+	// Commit transaction
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}

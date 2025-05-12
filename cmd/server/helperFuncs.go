@@ -31,7 +31,7 @@ func verifyNotification(req core.Notification, keys core.PublicKeys) error {
 		log.Printf("Missing To in notification %s", req.UUID)
 		return fmt.Errorf("missing To")
 	}
-	if req.Type != "delivery" && req.Type != "read" {
+	if req.Type != "delivery" && req.Type != "read" && req.Type != "decline" {
 		log.Printf("Invalid Type in notification %s: %s", req.UUID, req.Type)
 		return fmt.Errorf("invalid Type")
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"github.com/jadefox10200/zcomm/core"
 )
@@ -41,20 +40,20 @@ func (in *Inbox) HandleSend(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid dispatch", http.StatusBadRequest)
 		return
 	}
-
+	fmt.Printf("Got a dispatch for: %s", disp.To)
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
-	recipients := append(disp.To, disp.CC...)
-	for _, to := range recipients {
-		if _, exists := in.keyring.Get(to); !exists {
-			http.Error(w, fmt.Sprintf("recipient %s not found", to), http.StatusBadRequest)
-			return
-		}
-		//this an in-memory inbox so we should do something to make sure we don't lose something.
-		in.inbox[to] = append(in.inbox[to], disp)
+	// recipients := append([]string{disp.To}, disp.CC...)
+	// for _, to := range recipients {
+	if _, exists := in.keyring.Get(disp.To); !exists {
+		http.Error(w, fmt.Sprintf("recipient %s not found", disp.To), http.StatusBadRequest)
+		return
 	}
-	fmt.Printf("Stored dispatch for %s from %s: %s\n", strings.Join(recipients, ","), disp.From, disp.Subject)
+	//this an in-memory inbox so we should do something to make sure we don't lose something.
+	in.inbox[disp.To] = append(in.inbox[disp.To], disp)
+	// }
+	fmt.Printf("Stored dispatch for %s from %s: %s\n", disp.To, disp.From, disp.Subject)
 
 	w.WriteHeader(http.StatusOK)
 }

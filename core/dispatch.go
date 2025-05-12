@@ -19,19 +19,26 @@ type PublicKeys struct {
 }
 
 type Dispatch struct {
-	UUID            string
-	From            string
-	To              []string
+	UUID            string `json:"uuid" db:"uuid"`
+	From            string `json:"from_zid" db:"from_zid"`
+	To              string `json:"to_zid" db:"to_zid"`
 	CC              []string
-	Subject         string
-	Body            string
-	LocalNonce      string
-	Nonce           string
-	Timestamp       int64
-	ConversationID  string
-	Signature       string
-	EphemeralPubKey string
-	IsEnd           bool
+	Subject         string `json:"subject" db:"subject"`
+	Body            string `json:"body" db:"body"`
+	LocalNonce      string `json:"local_nonce" db:"local_nonce"`
+	Nonce           string `json:"nonce" db:"nonce"`
+	Timestamp       int64  `json:"timestamp" db:"timestamp"`
+	ConversationID  string `json:"conversation_id" db:"conversation_id"`
+	Signature       string `json:"signature" db:"signature"`
+	EphemeralPubKey string `json:"ephemeral_pub_key" db:"ephemeral_pub_key"`
+	IsEnd           bool   `json:"is_end" db:"is_end"`
+}
+
+type BasketDispatch struct {
+	DispatchID string `json:"dispatch_id" db:"dispatch_id"`
+	To         string `json:"to_zid" db:"to_zid"`
+	From       string `json:"from_zid" db:"from_zid"`
+	Subject    string `json:"subject" db:"subject"`
 }
 
 type Notification struct {
@@ -50,7 +57,7 @@ type ReceiveRequest struct {
 	Sig string `json:"sig"`
 }
 
-func NewEncryptedDispatch(from string, to, cc, via []string, subject, body string, convID string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte, isEnd bool) (*Dispatch, error) {
+func NewEncryptedDispatch(from string, to string, cc, via []string, subject, body string, convID string, privKey ed25519.PrivateKey, sharedKey [32]byte, ephemeralPub []byte, isEnd bool) (*Dispatch, error) {
 	nonce := make([]byte, 12)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
@@ -68,6 +75,12 @@ func NewEncryptedDispatch(from string, to, cc, via []string, subject, body strin
 
 	encrypted := gcm.Seal(nil, nonce, []byte(body), nil)
 	timestamp := time.Now().Unix()
+
+	if to == "" {
+		return nil, fmt.Errorf("you sent the dispatch to no one")
+	} else {
+		fmt.Printf("Sending to: %s\n", to)
+	}
 
 	//if the convID is empty, this must be a NEW dispatch so we need to start the conversation:
 	if convID == "" {

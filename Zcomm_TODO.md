@@ -1,5 +1,8 @@
 # Zcomm ToDo List
 
+# Outstanding:
+- Pullback does not check with server and full pull back if it was sent and waiting to be delivered. 
+- Need to improve offline support. Notifications could get lost if the server goes down and loses either the notifications or dispatches waiting to be delivered. Server will need to implement an API for the client to check the status of notifications and dispatches not yet sent. 
 
 # Updated Zcomm Development Roadmap 3 May 2025:
 
@@ -21,9 +24,9 @@ This roadmap prioritizes features for Zcomm, aligning with its mission as a secu
 
 ## Phase 1: Security and Core Usability (0-3 Months)
 - **Login System for Key Security**
-  - Encrypt private keys with password-derived keys (Argon2).
-  - Add CLI login prompt, secure identity files.
-  - *Why*: Protects keys, foundational for trust.
+done  - Encrypt private keys with password-derived keys (Argon2).
+done  - Add CLI login prompt, secure identity files.
+done   - *Why*: Protects keys, foundational for trust.
 - **Rotating Keys**
   - Implement periodic ECDH and Ed25519 key rotation.
   - Update server public keys, re-encrypt local storage, add CLI commands.

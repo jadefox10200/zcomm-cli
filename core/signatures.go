@@ -30,7 +30,7 @@ func VerifySignature(pubKey, data []byte, signature string) (bool, error) {
 func GenerateDispatchHash(disp Dispatch) string {
 	hashInput := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s|%s|%t",
 		disp.From,
-		strings.Join(disp.To, ","),
+		disp.To,
 		strings.Join(disp.CC, ","),
 		disp.Subject,
 		disp.Body,
