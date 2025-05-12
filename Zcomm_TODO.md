@@ -9,7 +9,7 @@
 This roadmap prioritizes features for Zcomm, aligning with its mission as a secure, action-oriented messaging platform. The email gateway is excluded due to complexity and security risks. Rotating keys and device sync are added for security and usability.
 
 ## Smith Notes:
-- Implement "decline" as an option for dispatches. This will also send a notification of type deline. 
+done - Implement "decline" as an option for dispatches. This will also send a notification of type deline. 
   This allows users to not answer a dispatch and simply decline to answer and informing the original 
   of the action so it is removed from unaswered. This is basically a non-verbal ack and will archive the 
   conversation. 
@@ -32,7 +32,7 @@ done   - *Why*: Protects keys, foundational for trust.
   - Update server public keys, re-encrypt local storage, add CLI commands.
   - *Why*: Enhances forward secrecy, critical for security.
 - **Contacts and Aliases**
-  - Implement contact database and alias mapping.
+  done - Implement contact database and alias mapping.
   - Add CLI commands for contact management, sync public keys.
   - *Why*: Simplifies addressing, enhances usability.
 - **Task Creation Based on Dispatches**
