@@ -39,6 +39,9 @@ type BasketDispatch struct {
 	To         string `json:"to_zid" db:"to_zid"`
 	From       string `json:"from_zid" db:"from_zid"`
 	Subject    string `json:"subject" db:"subject"`
+	Timestamp  int64  `json:"timestamp" db:"timestamp"`
+	IsEnd      bool   `json:"is_end" db:"is_end"`
+	Status     string `json:"status" db:"status"`
 }
 
 type Notification struct {

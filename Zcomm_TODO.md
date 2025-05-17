@@ -4,15 +4,28 @@
 - Pullback does not check with server and full pull back if it was sent and waiting to be delivered. 
 - Need to improve offline support. Notifications could get lost if the server goes down and loses either the notifications or dispatches waiting to be delivered. Server will need to implement an API for the client to check the status of notifications and dispatches not yet sent. 
 
+
 # Updated Zcomm Development Roadmap 3 May 2025:
 
 This roadmap prioritizes features for Zcomm, aligning with its mission as a secure, action-oriented messaging platform. The email gateway is excluded due to complexity and security risks. Rotating keys and device sync are added for security and usability.
 
 ## Smith Notes:
+<<<<<<< HEAD
 done - Implement "decline" as an option for dispatches. This will also send a notification of type deline. 
   This allows users to not answer a dispatch and simply decline to answer and informing the original 
   of the action so it is removed from unaswered. This is basically a non-verbal ack and will archive the 
   conversation. 
+=======
+- Gap in logic where a batch of dispatches are delivered to Bob. If a dispatch fails to get stored by Bob, it's lost. 
+  The server delivered the payload and then removes it from store. We only update Alice once Bob sends the Delivered notification
+  but this may never happen if there was an error. We should update this so there is an error notification. This way Bob can tell
+  Alice something went wrong. 
+- Situation where if the server gets a dispatch or notification while Bob is offline and the server crashes, we lose    
+  everythingthe server didn't yet deliver. Client needs to check with server if the "sent" dispatches are still on the server. 
+  Also server needs a way of dealing with notifications. Would it be insecure for the server to store notifications? Add overhead for sure. Deletes notifications once passed on. 
+- Possible functionality is needed where someone can log into their account and see all of the traffic for multiple ZID baskets 
+  on one screen. This will likely be needed once we have a GUI. 
+>>>>>>> offline
 - Possibly need a discussion data model. Right now we have a conversation. When we add CC how do we handle someone
   who decides to answer a CC? This would start a new conversation but there is no link between the two even thos the
   dispatch will then appear in two conversations. We would need a discussion model. While this won't have an active/inactive
