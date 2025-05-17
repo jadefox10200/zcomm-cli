@@ -32,6 +32,7 @@ func main() {
 	http.HandleFunc("/notifications_request", inbox.HandleReqNotifs)
 	http.HandleFunc("/publish", HandlePublishKeys(keyStore))
 	http.HandleFunc("/pubkey", HandleFetchKeys(keyStore))
+	http.HandleFunc("/ping", HandlePing())
 
 	log.Println("ZComm Switchboard server running on :8443")
 	err = http.ListenAndServeTLS(":8443", "data/certs/server.crt", "data/certs/server.key", nil)

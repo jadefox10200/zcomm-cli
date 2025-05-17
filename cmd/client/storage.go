@@ -3,9 +3,12 @@ package main
 
 import (
 	"bufio"
-	"crypto/ed25519"
+	"bytes"
 	"database/sql"
 	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
 	"regexp"
 
 	// "encoding/json"
@@ -26,34 +29,37 @@ import (
 // Modified: StoreDispatch, LoadDispatches, viewArchivedConversations
 
 type Storage interface {
-	StoreDispatch(zid string, disp core.Dispatch) error
-	LoadDispatches(zid string) ([]core.Dispatch, error)
-	StoreBasket(zid, basket, dispID string) error
-	LoadBasketDispatches(zid, basket string) ([]core.BasketDispatch, error)
-	LoadBasket(zid, basket string) ([]string, error)
-	// LoadBaskets(zid, basket string) ([]string, error)
-	MoveMessage(zid, fromBasket, toBasket, dispID string) error
-	RemoveMessage(zid, basket, dispID string) error
-	StoreConversation(zid, conID, dispID string, seqNo int, subject string, isEnd bool) error
-	//StoreConversation(zid, conID, dispID string, seqNo int, subject string) error
-	LoadConversations(zid string) ([]Conversation, error)
-	LoadConversation(zid, conID string) (Conversation, error)
-	ArchiveConversation(zid, conversationID string, ended bool) error
-	UnarchiveConversation(zid, conversationID string) error
-	StorePendingNotification(zid string, notif core.Notification) error
-	LoadPendingNotifications(zid string) ([]core.Notification, error)
-	RemovePendingNotification(zid, notifID, notifType string) error
-	StoreReadReceipt(zid string, notif core.Notification) error
-	EndConversation(zid, conversationID string, end bool) error
-	GetDispatch(dispatchID string) (core.Dispatch, error) // Added
-	HandleOutBasketDispatch(zid string, disp core.Dispatch)
-	ViewConversations(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte, archived bool) bool
-
-	AddContact(zid, alias, contactZID, edPub, ecdhPub string) error
-	RemoveContact(zid, alias string) error
-	ListContacts(zid string) ([]Contact, error)
-	ResolveAlias(zid, alias string) (string, error)
-	GetContactPublicKeys(zid, contactZID string) (edPub, ecdhPub string, err error)
+	StoreDispatch(disp core.Dispatch) error
+	LoadDispatches() ([]core.Dispatch, error)
+	StoreBasket(basket, dispID, status string) error
+	LoadBasketDispatches(basket string) ([]core.BasketDispatch, error)
+	LoadBasket(basket string) ([]string, error)
+	MoveMessage(fromBasket, toBasket, dispID, status string) error
+	RemoveMessage(basket, dispID string) error
+	StoreConversation(conID, dispID string, seqNo int, subject string, isEnd bool) error
+	LoadConversations() ([]Conversation, error)
+	LoadConversation(conID string) (Conversation, error)
+	ArchiveConversation(conversationID string, ended bool) error
+	UnarchiveConversation(conversationID string) error
+	StorePendingNotification(notif core.Notification) error
+	LoadPendingNotifications() ([]core.Notification, error)
+	RemovePendingNotification(notifID, notifType string) error
+	StoreReadReceipt(notif core.Notification) error
+	EndConversation(conversationID string, end bool) error
+	GetDispatch(dispatchID string) (core.Dispatch, error)
+	HandleOutBasketDispatch(disp core.Dispatch)
+	ViewConversations(app *App, archived bool) bool
+	AddContact(alias, contactZID, edPub, ecdhPub string) error
+	RemoveContact(alias string) error
+	ListContacts() ([]Contact, error)
+	ResolveAlias(alias string) (string, error)
+	ResolveZID(input string) (string, error)
+	GetContactPublicKeys(contactZID string) (edPub, ecdhPub string, err error)
+	// IsOnline() bool
+	SendDispatch(disp core.Dispatch) error
+	UpdateDispatchFields(uuid, nonce, ephemeralPubKey, signature string) error
+	// StoreToBeSent(dispatchID string, disp core.Dispatch) error
+	// LoadToBeSent(dispatchID string) (core.Dispatch, error)
 }
 
 type Conversation struct {
@@ -117,6 +123,7 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 		CREATE TABLE IF NOT EXISTS Baskets (
 			basket_name TEXT NOT NULL,
 			dispatch_id TEXT NOT NULL,
+			status TEXT, 
 			PRIMARY KEY (basket_name, dispatch_id),
 			FOREIGN KEY (dispatch_id) REFERENCES Dispatches(uuid)
 		);
@@ -155,7 +162,7 @@ func NewSQLiteStorage(zid string) (*SQLiteStorage, error) {
 	return &SQLiteStorage{db: db}, nil
 }
 
-func (s *SQLiteStorage) StoreDispatch(zid string, disp core.Dispatch) error {
+func (s *SQLiteStorage) StoreDispatch(disp core.Dispatch) error {
 	if _, err := uuid.Parse(disp.UUID); err != nil {
 		return fmt.Errorf("invalid uuid: %w", err)
 	}
@@ -209,13 +216,11 @@ type dispatchRow struct {
 	IsEnd           bool   `db:"is_end"`
 }
 
-func (s *SQLiteStorage) LoadDispatches(zid string) ([]core.Dispatch, error) {
+func (s *SQLiteStorage) LoadDispatches() ([]core.Dispatch, error) {
 	var rows []dispatchRow
 	err := s.db.Select(&rows, `
 		SELECT uuid, from_zid, to_zid, subject, body, local_nonce, nonce, ephemeral_pub_key, conversation_id, timestamp, is_end
-		FROM Dispatches
-		WHERE from_zid = ? OR to_zid LIKE ?
-	`, zid, "%"+zid+"%")
+		FROM Dispatches`)
 	if err != nil {
 		return nil, fmt.Errorf("select dispatches: %w", err)
 	}
@@ -253,18 +258,18 @@ func (s *SQLiteStorage) LoadDispatches(zid string) ([]core.Dispatch, error) {
 	return disps, nil
 }
 
-func (s *SQLiteStorage) StoreBasket(zid, basket, dispID string) error {
+func (s *SQLiteStorage) StoreBasket(basket, dispID, status string) error {
 	_, err := s.db.Exec(`
-		INSERT INTO Baskets (basket_name, dispatch_id)
-		VALUES (?, ?)
-	`, basket, dispID)
+		INSERT INTO Baskets (basket_name, dispatch_id, status)
+		VALUES (?, ?, ?)
+	`, basket, dispID, status)
 	if err != nil {
 		return fmt.Errorf("insert basket %s: %w", basket, err)
 	}
 	return nil
 }
 
-func (s *SQLiteStorage) LoadBasket(zid, basket string) ([]string, error) {
+func (s *SQLiteStorage) LoadBasket(basket string) ([]string, error) {
 	var uuids []string
 	err := s.db.Select(&uuids, `
 		SELECT dispatch_id
@@ -277,13 +282,14 @@ func (s *SQLiteStorage) LoadBasket(zid, basket string) ([]string, error) {
 	return uuids, nil
 }
 
-func (s *SQLiteStorage) LoadBasketDispatches(zid, basket string) ([]core.BasketDispatch, error) {
+func (s *SQLiteStorage) LoadBasketDispatches(basket string) ([]core.BasketDispatch, error) {
 	var disps []core.BasketDispatch
 	err := s.db.Select(&disps, `
-		SELECT b.dispatch_id, d.to_zid, d.from_zid, d.subject
+		SELECT b.dispatch_id, d.to_zid, d.from_zid, d.subject, d.timestamp, d.is_end, b.status
 		FROM Baskets b
 		left join Dispatches d on d.uuid = b.dispatch_id
 		WHERE basket_name = ?
+		ORDER BY d.timestamp
 	`, basket)
 	if err != nil {
 		return nil, fmt.Errorf("select basket %s: %w", basket, err)
@@ -291,7 +297,7 @@ func (s *SQLiteStorage) LoadBasketDispatches(zid, basket string) ([]core.BasketD
 	return disps, nil
 }
 
-func (s *SQLiteStorage) MoveMessage(zid, fromBasket, toBasket, dispID string) error {
+func (s *SQLiteStorage) MoveMessage(fromBasket, toBasket, dispID, status string) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -305,16 +311,17 @@ func (s *SQLiteStorage) MoveMessage(zid, fromBasket, toBasket, dispID string) er
 		return fmt.Errorf("delete from basket %s: %w", fromBasket, err)
 	}
 	_, err = tx.Exec(`
-		INSERT INTO Baskets (basket_name, dispatch_id)
-		VALUES (?, ?)
-	`, toBasket, dispID)
+		INSERT INTO Baskets (basket_name, dispatch_id, status)
+		VALUES (?, ?, ?)
+	`, toBasket, dispID, status)
 	if err != nil {
 		return fmt.Errorf("insert into basket %s: %w", toBasket, err)
 	}
+
 	return tx.Commit()
 }
 
-func (s *SQLiteStorage) RemoveMessage(zid, basket, dispID string) error {
+func (s *SQLiteStorage) RemoveMessage(basket, dispID string) error {
 	_, err := s.db.Exec(`
 		DELETE FROM Baskets
 		WHERE basket_name = ? AND dispatch_id = ?
@@ -326,7 +333,7 @@ func (s *SQLiteStorage) RemoveMessage(zid, basket, dispID string) error {
 }
 
 // StoreConversation stores or updates a conversation and its dispatch.
-func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, subject string, isEnd bool) error {
+func (s *SQLiteStorage) StoreConversation(conID, dispID string, seqNo int, subject string, isEnd bool) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -378,7 +385,7 @@ func (s *SQLiteStorage) StoreConversation(zid, conID, dispID string, seqNo int, 
 }
 
 // LoadConversation loads a single conversation by con_id for the given zid.
-func (s *SQLiteStorage) LoadConversation(zid, conID string) (Conversation, error) {
+func (s *SQLiteStorage) LoadConversation(conID string) (Conversation, error) {
 	var conv Conversation
 	err := s.db.Get(&conv, `
 		SELECT con_id, subject, ended
@@ -421,7 +428,7 @@ func (s *SQLiteStorage) LoadConversation(zid, conID string) (Conversation, error
 	return conv, nil
 }
 
-func (s *SQLiteStorage) LoadConversations(zid string) ([]Conversation, error) {
+func (s *SQLiteStorage) LoadConversations() ([]Conversation, error) {
 	var convs []Conversation
 	err := s.db.Select(&convs, `
 		SELECT con_id, subject, ended
@@ -459,7 +466,7 @@ func (s *SQLiteStorage) LoadConversations(zid string) ([]Conversation, error) {
 	return convs, nil
 }
 
-func (s *SQLiteStorage) EndConversation(zid, conversationID string, end bool) error {
+func (s *SQLiteStorage) EndConversation(conversationID string, end bool) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -490,7 +497,7 @@ func (s *SQLiteStorage) EndConversation(zid, conversationID string, end bool) er
 	return tx.Commit()
 }
 
-func (s *SQLiteStorage) ArchiveConversation(zid, conversationID string, ended bool) error {
+func (s *SQLiteStorage) ArchiveConversation(conversationID string, ended bool) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -521,7 +528,7 @@ func (s *SQLiteStorage) ArchiveConversation(zid, conversationID string, ended bo
 	return tx.Commit()
 }
 
-func (s *SQLiteStorage) UnarchiveConversation(zid, conversationID string) error {
+func (s *SQLiteStorage) UnarchiveConversation(conversationID string) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -561,12 +568,14 @@ type ConvSummary struct {
 }
 
 // viewConversations lists active or archived conversations and prompts to view one
-func (s *SQLiteStorage) ViewConversations(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, encryptionKey []byte, archived bool) bool {
+func (s *SQLiteStorage) ViewConversations(app *App, archived bool) bool {
 	// Query conversations
 	endedVal := 0
 	if archived {
 		endedVal = 1
 	}
+
+	//we should add a last_dispatch column to this so the conversations ordered from newest to oldest.
 	var convList []ConvSummary
 	err := s.db.Select(&convList, `
 		SELECT con_id, subject, ended
@@ -619,12 +628,12 @@ func (s *SQLiteStorage) ViewConversations(zid string, edPriv ed25519.PrivateKey,
 
 	// View selected conversation
 	conv := convList[num-1]
-	return viewConversation(zid, edPriv, ecdhPriv, s, conv.ConID, conv.Subject, encryptionKey, conv.Ended)
+	return viewConversation(app, conv.ConID, conv.Subject, conv.Ended)
 }
 
 // viewConversation displays dispatches for a conversation and offers actions
-func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, storage *SQLiteStorage, conID string, subject string, encryptionKey []byte, ended bool) bool {
-	localKey := core.DeriveLocalEncryptionKey(ecdhPriv)
+func viewConversation(app *App, conID string, subject string, ended bool) bool {
+	localKey := core.DeriveLocalEncryptionKey(app.ECDHPriv)
 
 	// Fetch dispatches
 	type ConvDisplay struct {
@@ -641,7 +650,7 @@ func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 	}
 
 	var dispatches []ConvDisplay
-	err := storage.db.Select(&dispatches, `
+	err := app.Storage.(*SQLiteStorage).db.Select(&dispatches, `
 		SELECT 
 			cd.dispatch_id,
 			cd.seq_no,
@@ -677,13 +686,14 @@ func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 		for _, cd := range dispatches {
 			// Resolve sender alias
 			sender := cd.FromZID
-			if alias, err := storage.ResolveAlias(zid, cd.FromZID); err == nil {
+			if alias, err := app.Storage.ResolveAlias(cd.FromZID); err == nil {
 				sender = alias
 			}
 
 			fmt.Printf("Dispatch ID: %s\n", cd.DispatchID)
 			fmt.Printf("From: %s\n", sender)
 			fmt.Printf("To: %s\n", cd.ToZID)
+			fmt.Printf("Timestamp: %s\n", time.Unix(cd.Timestamp, 0).Format(time.RFC1123))
 			fmt.Printf("Subject: %s\n", cd.Subject)
 
 			// Decrypt body if local_nonce exists
@@ -708,7 +718,6 @@ func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 				fmt.Printf("Body: %s (unencrypted)\n", cd.Body)
 			}
 
-			fmt.Printf("Timestamp: %s\n", time.Unix(cd.Timestamp, 0).Format(time.RFC1123))
 			fmt.Println("---")
 		}
 	}
@@ -731,7 +740,7 @@ func viewConversation(zid string, edPriv ed25519.PrivateKey, ecdhPriv [32]byte, 
 		switch choice {
 		case "1":
 			newEnded := !ended
-			err = storage.StoreConversation(zid, conID, "", 0, subject, newEnded)
+			err = app.Storage.StoreConversation(conID, "", 0, subject, newEnded)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Update conversation %s: %v\n", conID, err)
 				continue
@@ -761,7 +770,7 @@ type notificationRow struct {
 	Timestamp  int64  `db:"timestamp"`
 }
 
-func (s *SQLiteStorage) StorePendingNotification(zid string, notif core.Notification) error {
+func (s *SQLiteStorage) StorePendingNotification(notif core.Notification) error {
 	_, err := s.db.Exec(`
 		INSERT OR IGNORE INTO PendingNotifications (uuid, type, signature, dispatch_id, timestamp)
 		VALUES (?, ?, ?, ?, ?)
@@ -772,7 +781,7 @@ func (s *SQLiteStorage) StorePendingNotification(zid string, notif core.Notifica
 	return nil
 }
 
-func (s *SQLiteStorage) LoadPendingNotifications(zid string) ([]core.Notification, error) {
+func (s *SQLiteStorage) LoadPendingNotifications() ([]core.Notification, error) {
 	var rows []notificationRow
 	err := s.db.Select(&rows, `
 		SELECT uuid, type, signature, dispatch_id, timestamp
@@ -796,7 +805,7 @@ func (s *SQLiteStorage) LoadPendingNotifications(zid string) ([]core.Notificatio
 	return notifs, nil
 }
 
-func (s *SQLiteStorage) RemovePendingNotification(zid, notifID, notifType string) error {
+func (s *SQLiteStorage) RemovePendingNotification(notifID, notifType string) error {
 	_, err := s.db.Exec(`
 		DELETE FROM PendingNotifications
 		WHERE uuid = ? AND type = ?
@@ -808,10 +817,8 @@ func (s *SQLiteStorage) RemovePendingNotification(zid, notifID, notifType string
 }
 
 // StoreReadReceipt stores a read receipt in the database.
-func (s *SQLiteStorage) StoreReadReceipt(zid string, notif core.Notification) error {
-	if zid == "" || notif.Type != "read" {
-		return fmt.Errorf("invalid read receipt data")
-	}
+func (s *SQLiteStorage) StoreReadReceipt(notif core.Notification) error {
+
 	keys, err := fetchPublicKeys(notif.From)
 	if err != nil {
 		return fmt.Errorf("fetch public keys for %s: %w", notif.From, err)
@@ -849,7 +856,7 @@ type Contact struct {
 }
 
 // RemoveContact deletes a contact by alias
-func (s *SQLiteStorage) RemoveContact(zid, alias string) error {
+func (s *SQLiteStorage) RemoveContact(alias string) error {
 	alias = strings.ToLower(alias)
 	_, err := s.db.Exec(`
 		DELETE FROM Contacts WHERE alias = ?
@@ -861,7 +868,7 @@ func (s *SQLiteStorage) RemoveContact(zid, alias string) error {
 }
 
 // ListContacts retrieves all contacts
-func (s *SQLiteStorage) ListContacts(zid string) ([]Contact, error) {
+func (s *SQLiteStorage) ListContacts() ([]Contact, error) {
 	var contacts []Contact
 	err := s.db.Select(&contacts, `
 		SELECT alias, zid, ed_pub, ecdh_pub, last_updated
@@ -874,11 +881,31 @@ func (s *SQLiteStorage) ListContacts(zid string) ([]Contact, error) {
 	return contacts, nil
 }
 
+func (s *SQLiteStorage) ResolveZID(input string) (string, error) {
+	zidPattern := regexp.MustCompile(`^z[0-9]{9,}$`)
+
+	if !zidPattern.MatchString(input) {
+		return input, fmt.Errorf("invalid zid: %s", input)
+	}
+
+	input = strings.ToLower(input)
+	// Input is treated as an alias, query Contacts table
+	var alias string
+	err := s.db.Get(&alias, `
+		SELECT alias FROM Contacts WHERE zid = ?
+	`, input)
+	if err != nil {
+		return input, fmt.Errorf("resolve zid %q: %w", input, err)
+	}
+
+	return alias, nil
+}
+
 // ResolveAlias maps an alias to a ZID
 // ResolveAlias checks if the input is a ZID or an alias. If it's a ZID, returns it directly.
 // If it's an alias, queries the Contacts table to resolve it to a ZID.
 // If input == 0, we assume a user is trying to exit rather than resolve. The string "0" is returned with an error.
-func (s *SQLiteStorage) ResolveAlias(zid, input string) (string, error) {
+func (s *SQLiteStorage) ResolveAlias(input string) (string, error) {
 	if input == "0" {
 		return "0", fmt.Errorf("user entered 0")
 	}
@@ -898,16 +925,14 @@ func (s *SQLiteStorage) ResolveAlias(zid, input string) (string, error) {
 		SELECT zid FROM Contacts WHERE alias = ?
 	`, input)
 	if err != nil {
-		return "", fmt.Errorf("resolve alias %q: %w", input, err)
+		return input, fmt.Errorf("resolve alias %q: %w", input, err)
 	}
-
-	// fmt.Printf("Using %s to send\n", contactZID)
 
 	return contactZID, nil
 }
 
 // GetContactPublicKeys retrieves public keys for a ZID
-func (s *SQLiteStorage) GetContactPublicKeys(zid, contactZID string) (edPub, ecdhPub string, err error) {
+func (s *SQLiteStorage) GetContactPublicKeys(contactZID string) (edPub, ecdhPub string, err error) {
 	var contact Contact
 	err = s.db.Get(&contact, `
 		SELECT ed_pub, ecdh_pub FROM Contacts WHERE zid = ?
@@ -919,7 +944,7 @@ func (s *SQLiteStorage) GetContactPublicKeys(zid, contactZID string) (edPub, ecd
 }
 
 // AddContact stores a new contact with alias, ZID, and public keys
-func (s *SQLiteStorage) AddContact(zid, alias, contactZID, edPub, ecdhPub string) error {
+func (s *SQLiteStorage) AddContact(alias, contactZID, edPub, ecdhPub string) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -942,7 +967,7 @@ func (s *SQLiteStorage) AddContact(zid, alias, contactZID, edPub, ecdhPub string
 func (s *SQLiteStorage) GetDispatch(dispatchID string) (core.Dispatch, error) {
 	var disp core.Dispatch
 	err := s.db.Get(&disp, `
-		SELECT uuid, conversation_id, from_zid, to_zid, subject, body, local_nonce, is_end
+		SELECT uuid, from_zid, to_zid, subject, body, local_nonce, nonce, timestamp, conversation_id, signature, ephemeral_pub_key, is_end
 		FROM Dispatches
 		WHERE uuid = ?
 	`, dispatchID)
@@ -953,7 +978,7 @@ func (s *SQLiteStorage) GetDispatch(dispatchID string) (core.Dispatch, error) {
 }
 
 // HandleOutBasketDispatch handles a dispatch in the "out" basket, providing a pullback option.
-func (s *SQLiteStorage) HandleOutBasketDispatch(zid string, disp core.Dispatch) {
+func (s *SQLiteStorage) HandleOutBasketDispatch(disp core.Dispatch) {
 	// fmt.Printf("Dispatch: To: %s, Subject: %s, Body: %s\n", disp.To, disp.Subject, disp.Body)
 	fmt.Print("Options: [1] Pullback, [0] Exit: ")
 	var choice int
@@ -972,7 +997,7 @@ func (s *SQLiteStorage) HandleOutBasketDispatch(zid string, disp core.Dispatch) 
 	}
 
 	// Perform pullback operation
-	if err := s.pullBack(zid, disp); err != nil {
+	if err := s.pullBack(disp); err != nil {
 		fmt.Fprintf(os.Stderr, "Pullback dispatch %s: %v\n", disp.UUID, err)
 		return
 	}
@@ -981,7 +1006,7 @@ func (s *SQLiteStorage) HandleOutBasketDispatch(zid string, disp core.Dispatch) 
 // pullBack performs the pullback operation for a dispatch in the "out" basket.
 // STILL NEED TO IMPLEMENT GETTING IT BACK FROM THE SERVER
 // pullBack performs the pullback operation for a dispatch in the "out" basket.
-func (s *SQLiteStorage) pullBack(zid string, disp core.Dispatch) error {
+func (s *SQLiteStorage) pullBack(disp core.Dispatch) error {
 	tx, err := s.db.Beginx()
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -1073,6 +1098,121 @@ func (s *SQLiteStorage) pullBack(zid string, disp core.Dispatch) error {
 	// Commit transaction
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+// // isOnline checks if the device has internet connectivity by pinging a server.
+// func (s *SQLiteStorage) IsOnline() bool {
+// 	resp, err := http.Get(serverURL + "/ping")
+// 	if err != nil {
+// 		return false
+// 	}
+// 	defer resp.Body.Close()
+// 	return resp.StatusCode == http.StatusOK
+// }
+
+// IsOnline checks if the server is available by pinging the /ping endpoint.
+func (app *App) IsOnline() bool {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	// Cache result for 5 seconds to avoid excessive pings
+	if time.Since(app.lastOnlineCheck) < 5*time.Second {
+		return app.isOnlineCached
+	}
+
+	resp, err := http.Get(serverURL + "/ping")
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		app.lastOnlineCheck = time.Now()
+		app.isOnlineCached = false
+		return false
+	}
+	defer resp.Body.Close()
+
+	var response map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil || response["status"] != "ok" {
+		app.lastOnlineCheck = time.Now()
+		app.isOnlineCached = false
+		return false
+	}
+
+	app.lastOnlineCheck = time.Now()
+	app.isOnlineCached = true
+	return true
+}
+
+// func (s *SQLiteStorage) StoreToBeSent(dispatchID string, disp core.Dispatch) error {
+// 	data, err := json.Marshal(disp)
+// 	if err != nil {
+// 		return fmt.Errorf("marshal dispatch: %w", err)
+// 	}
+// 	_, err = s.db.Exec(`
+// 		INSERT INTO toBeSent (dispatch_id, zid, dispatch_json)
+// 		VALUES (?, ?)
+// 	`, disp.UUID, string(data))
+// 	if err != nil {
+// 		return fmt.Errorf("insert toBeSent: %w", err)
+// 	}
+// 	return nil
+// }
+
+// func (s *SQLiteStorage) LoadToBeSent(dispatchID string) (core.Dispatch, error) {
+// 	var dispatchJSON string
+// 	err := s.db.Get(&dispatchJSON, `
+// 		SELECT dispatch_json
+// 		FROM toBeSent
+// 		WHERE dispatch_id = ?
+// 	`, dispatchID)
+// 	if err == sql.ErrNoRows {
+// 		return core.Dispatch{}, fmt.Errorf("dispatch %s not found in toBeSent", dispatchID)
+// 	}
+// 	if err != nil {
+// 		return core.Dispatch{}, fmt.Errorf("select toBeSent: %w", err)
+// 	}
+
+// 	var disp core.Dispatch
+// 	if err := json.Unmarshal([]byte(dispatchJSON), &disp); err != nil {
+// 		return core.Dispatch{}, fmt.Errorf("unmarshal dispatch: %w", err)
+// 	}
+// 	return disp, nil
+// }
+
+func (s *SQLiteStorage) SendDispatch(disp core.Dispatch) error {
+
+	// Serialize the dispatch to JSON
+	data, err := json.Marshal(disp)
+	if err != nil {
+		return fmt.Errorf("marshal dispatch: %w", err)
+	}
+
+	// Send the dispatch to the server
+	resp, err := http.Post(serverURL+"/send", "application/json", bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("send dispatch: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check server response
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("send dispatch failed: %s", string(body))
+	}
+
+	return nil
+}
+
+func (s *SQLiteStorage) UpdateDispatchFields(uuid, nonce, ephemeralPubKey, signature string) error {
+	_, err := s.db.Exec(`
+        UPDATE Dispatches
+        SET nonce = ?, ephemeral_pub_key = ?, signature = ?
+        WHERE uuid = ?
+    `, nonce, ephemeralPubKey, signature, uuid)
+	if err != nil {
+		return fmt.Errorf("update dispatch fields for %s: %w", uuid, err)
 	}
 	return nil
 }
