@@ -25,8 +25,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Storage interface and other methods unchanged
-// Modified: StoreDispatch, LoadDispatches, viewArchivedConversations
+// Storage interface and other methods
 
 type Storage interface {
 	StoreDispatch(disp core.Dispatch) error
@@ -55,11 +54,8 @@ type Storage interface {
 	ResolveAlias(alias string) (string, error)
 	ResolveZID(input string) (string, error)
 	GetContactPublicKeys(contactZID string) (edPub, ecdhPub string, err error)
-	// IsOnline() bool
 	SendDispatch(disp core.Dispatch) error
 	UpdateDispatchFields(uuid, nonce, ephemeralPubKey, signature string) error
-	// StoreToBeSent(dispatchID string, disp core.Dispatch) error
-	// LoadToBeSent(dispatchID string) (core.Dispatch, error)
 }
 
 type Conversation struct {
@@ -345,9 +341,6 @@ func (s *SQLiteStorage) StoreConversation(conID, dispID string, seqNo int, subje
 	if err != nil {
 		return fmt.Errorf("check conversation exists: %w", err)
 	}
-
-	// fmt.Printf("StoreConversation: conID=%s, dispID=%s, seqNo=%d, subject=%s, isEnd=%v, exists=%v, currentEnded=%v\n",
-	// conID, dispID, seqNo, subject, isEnd, exists, isEnd)
 
 	if !exists {
 		// Insert new conversation
@@ -828,10 +821,6 @@ func (s *SQLiteStorage) StoreReadReceipt(notif core.Notification) error {
 		return fmt.Errorf("decode public key for %s: %w", notif.From, err)
 	}
 
-	// Log notification for verification
-	// notifJSON, _ := json.MarshalIndent(notif, "", "  ")
-	// fmt.Printf("Verifying read receipt: %s\n", notifJSON)
-
 	valid, err := core.VerifyNotification(notif, pubKey)
 	if err != nil || !valid {
 		return fmt.Errorf("invalid notification signature: %w", err)
@@ -894,7 +883,9 @@ func (s *SQLiteStorage) ResolveZID(input string) (string, error) {
 	err := s.db.Get(&alias, `
 		SELECT alias FROM Contacts WHERE zid = ?
 	`, input)
-	if err != nil {
+	if err == sql.ErrNoRows {
+		return input, nil
+	} else if err != nil {
 		return input, fmt.Errorf("resolve zid %q: %w", input, err)
 	}
 
@@ -914,7 +905,6 @@ func (s *SQLiteStorage) ResolveAlias(input string) (string, error) {
 
 	if zidPattern.MatchString(input) {
 		// Input matches ZID pattern, return it directly
-		// fmt.Printf("regex z pattern matched: Sending back %s\n", input)
 		return input, nil
 	}
 
@@ -1102,16 +1092,6 @@ func (s *SQLiteStorage) pullBack(disp core.Dispatch) error {
 	return nil
 }
 
-// // isOnline checks if the device has internet connectivity by pinging a server.
-// func (s *SQLiteStorage) IsOnline() bool {
-// 	resp, err := http.Get(serverURL + "/ping")
-// 	if err != nil {
-// 		return false
-// 	}
-// 	defer resp.Body.Close()
-// 	return resp.StatusCode == http.StatusOK
-// }
-
 // IsOnline checks if the server is available by pinging the /ping endpoint.
 func (app *App) IsOnline() bool {
 	app.mu.Lock()
@@ -1144,42 +1124,6 @@ func (app *App) IsOnline() bool {
 	app.isOnlineCached = true
 	return true
 }
-
-// func (s *SQLiteStorage) StoreToBeSent(dispatchID string, disp core.Dispatch) error {
-// 	data, err := json.Marshal(disp)
-// 	if err != nil {
-// 		return fmt.Errorf("marshal dispatch: %w", err)
-// 	}
-// 	_, err = s.db.Exec(`
-// 		INSERT INTO toBeSent (dispatch_id, zid, dispatch_json)
-// 		VALUES (?, ?)
-// 	`, disp.UUID, string(data))
-// 	if err != nil {
-// 		return fmt.Errorf("insert toBeSent: %w", err)
-// 	}
-// 	return nil
-// }
-
-// func (s *SQLiteStorage) LoadToBeSent(dispatchID string) (core.Dispatch, error) {
-// 	var dispatchJSON string
-// 	err := s.db.Get(&dispatchJSON, `
-// 		SELECT dispatch_json
-// 		FROM toBeSent
-// 		WHERE dispatch_id = ?
-// 	`, dispatchID)
-// 	if err == sql.ErrNoRows {
-// 		return core.Dispatch{}, fmt.Errorf("dispatch %s not found in toBeSent", dispatchID)
-// 	}
-// 	if err != nil {
-// 		return core.Dispatch{}, fmt.Errorf("select toBeSent: %w", err)
-// 	}
-
-// 	var disp core.Dispatch
-// 	if err := json.Unmarshal([]byte(dispatchJSON), &disp); err != nil {
-// 		return core.Dispatch{}, fmt.Errorf("unmarshal dispatch: %w", err)
-// 	}
-// 	return disp, nil
-// }
 
 func (s *SQLiteStorage) SendDispatch(disp core.Dispatch) error {
 
